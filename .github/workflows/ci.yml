@@ -35,6 +35,5 @@ jobs:
           pixi-version: v0.82.0
           locked: true
           cache: true
-          activate-environment: true
       - uses: Swatinem/rust-cache@v2
       - run: pixi run check
