@@ -187,7 +187,12 @@ impl Compiled {
     /// inputs in the same order as `self.bands`; all tiles same shape. Returns F32, or U8 (0/1) if is_boolean.
     /// With no referenced bands there is no shape to take, so a 1x1 tile is evaluated.
     pub fn eval_tile(&self, inputs: &[&Tile], ctx: &PixelCtx) -> Tile {
+        assert_eq!(inputs.len(), self.bands.len(), "one input tile per band");
         let shape = inputs.first().map_or((1, 1), |t| t.shape());
+        assert!(
+            inputs.iter().all(|t| t.shape() == shape),
+            "input tiles differ in shape"
+        );
         let arrays: Vec<Array2<f32>> = inputs.iter().map(|t| t.to_f32()).collect();
         self.eval_arrays(&arrays, shape, ctx)
     }

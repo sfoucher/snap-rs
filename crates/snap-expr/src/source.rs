@@ -62,11 +62,18 @@ impl ExprSource {
     }
 }
 
-/// no_data (compared on the raw value) → NaN, then scaling.
+/// no_data (compared on the raw value, in the band's own type) → NaN, then scaling.
 fn geophysical(t: &Tile, no_data: Option<f64>, s: Scaling) -> Array2<f32> {
+    let is_f32 = matches!(t, Tile::F32(_));
     Array2::from_shape_fn(t.shape(), |(r, c)| {
         let raw = t.get_f64(r, c);
-        if Some(raw) == no_data {
+        let hit = match no_data {
+            // A no_data like -3.4e38 isn't exact in f32; widening the pixel wouldn't match it.
+            Some(nd) if is_f32 => raw as f32 == nd as f32,
+            Some(nd) => raw == nd,
+            None => false,
+        };
+        if hit {
             return f32::NAN;
         }
         let v = raw * s.factor + s.offset;
@@ -155,6 +162,28 @@ mod tests {
         assert_eq!(s.data_type(), DataType::F32);
         let Tile::F32(a) = s.read_tile(0, 0, 0).unwrap() else {
             panic!("expected F32")
+        };
+        assert_eq!(a[(0, 0)], 1.0);
+        assert!(a[(0, 1)].is_nan());
+    }
+
+    #[test]
+    fn f32_nodata_compared_in_f32() {
+        // -3.4e38 is not exactly representable in f32; the comparison must happen in f32.
+        let mut p = Product::new("p", "T", 2, 1);
+        p.add_band(band(
+            "B1",
+            arr2(&[[1.0, -3.4e38_f32]]),
+            Some(-3.4e38),
+            Scaling::default(),
+        ))
+        .unwrap();
+        let Tile::F32(a) = ExprSource::new("B1", &p)
+            .unwrap()
+            .read_tile(0, 0, 0)
+            .unwrap()
+        else {
+            panic!()
         };
         assert_eq!(a[(0, 0)], 1.0);
         assert!(a[(0, 1)].is_nan());
