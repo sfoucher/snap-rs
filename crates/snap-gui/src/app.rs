@@ -1,6 +1,7 @@
 use crate::dialogs::rgb::rgb_dialog;
 use crate::explorer::{explorer_ui, ExplorerAction};
 use crate::panels::color::{color_panel_ui, default_stretch};
+use crate::panels::pixel_info::{pixel_info_at, pixel_info_ui};
 use crate::view::{canvas_ui, GpuState, Stretch, ViewSources, ViewState};
 use egui_dock::{DockArea, DockState, NodeIndex};
 use snap_core::{
@@ -279,10 +280,14 @@ pub struct SnapApp {
     show_about: bool,
     rgb_dialog: Option<ProductId>,
     render_state: Option<eframe::egui_wgpu::RenderState>,
+    /// Latest canvas hover (view index, level-0 pixel); one frame behind the panel.
+    hover: Option<(usize, (f64, f64))>,
 }
 
 struct Viewer<'a> {
     state: &'a mut AppState,
+    hover: Option<(usize, (f64, f64))>,
+    next_hover: Option<(usize, (f64, f64))>,
     actions: Vec<ExplorerAction>,
 }
 
@@ -309,7 +314,17 @@ impl egui_dock::TabViewer for Viewer<'_> {
         match tab {
             Pane::Explorer => self.actions.extend(explorer_ui(ui, self.state)),
             Pane::Image(i) => {
-                canvas_ui(ui, self.state, *i);
+                let ev = canvas_ui(ui, self.state, *i);
+                if let Some(h) = ev.hover_pixel {
+                    self.next_hover = Some((*i, h));
+                }
+            }
+            Pane::PixelInfo => {
+                let info = self.hover.and_then(|(v, (x, y))| {
+                    let pid = self.state.views.get(v)?.product;
+                    pixel_info_at(self.state, pid, x, y)
+                });
+                pixel_info_ui(ui, info.as_ref());
             }
             Pane::Color => color_panel_ui(ui, self.state),
             _ => {}
@@ -345,6 +360,7 @@ impl SnapApp {
             show_about: false,
             rgb_dialog: None,
             render_state,
+            hover: None,
         }
     }
 
@@ -491,10 +507,16 @@ impl eframe::App for SnapApp {
         let mut actions = self.menu(ctx);
         let mut viewer = Viewer {
             state: &mut self.state,
+            hover: self.hover,
+            next_hover: None,
             actions: Vec::new(),
         };
         DockArea::new(&mut self.dock).show(ctx, &mut viewer);
         actions.append(&mut viewer.actions);
+        if viewer.next_hover != self.hover {
+            ctx.request_repaint();
+        }
+        self.hover = viewer.next_hover;
         if let Some((_, Pane::Image(i))) = self.dock.find_active_focused() {
             self.state.active_view = Some(*i);
         }
@@ -531,7 +553,7 @@ impl eframe::App for SnapApp {
 
 #[cfg(test)]
 #[path = "../../snap-io-gdal/tests/fixtures.rs"]
-mod fixtures;
+pub(crate) mod fixtures;
 
 #[cfg(test)]
 mod tests {

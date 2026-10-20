@@ -8,7 +8,6 @@ use snap_core::{TileKey, TileState, TILE};
 const ZOOM_STEP: f64 = 1.25;
 const HATCH_SPACING: f32 = 8.0;
 
-#[allow(dead_code)] // hover_pixel is read by the pixel info task
 pub struct CanvasEvent {
     pub hover_pixel: Option<(f64, f64)>,
 }
