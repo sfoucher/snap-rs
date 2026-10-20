@@ -13,6 +13,11 @@ Audience: the wider remote-sensing community. Cross-platform desktop (Linux, mac
 
 ## 2. Scope
 
+v1 is delivered in two implementation plans:
+
+- **Plan 1 — Viewer:** `snap-core`, `snap-expr`, `snap-io`, `snap-io-gdal`, `snap-gui`. Everything a user sees.
+- **Plan 2 — GPF/CLI:** `snap-gpf`, `snap-cli`, built-in `BandMaths` and `Subset`, graph runner. Starts once Plan 1's viewer opens a GeoTIFF.
+
 ### v1 — Image viewer
 
 Must:
