@@ -64,32 +64,35 @@ pub fn canvas_ui(ui: &mut egui::Ui, state: &mut AppState, view_idx: usize) -> Ca
     let Some(view) = state.views.get(view_idx) else {
         return event;
     };
-    let ViewSources::Single(band_name) = &view.sources else {
-        return event;
+    let (names, mode) = match &view.sources {
+        ViewSources::Single(n) => (vec![n.clone()], 0),
+        ViewSources::Rgb(n) => (n.to_vec(), 1),
     };
     let Some(product) = state.product(view.product).cloned() else {
         return event;
     };
-    let (w, h, src, no_data) = {
+    // (source, no_data) per channel; w/h and the pyramid depth come from the first band
+    // (ponytail: RGB bands are assumed to share one grid).
+    let (w, h, chans) = {
         let p = product.read().unwrap();
-        let Some(b) = p.band(band_name) else {
-            return event;
-        };
-        (
-            b.width,
-            b.height,
-            b.source.clone(),
-            b.no_data.map(|v| v as f32),
-        )
+        let mut chans = Vec::new();
+        for n in &names {
+            let Some(b) = p.band(n) else {
+                return event;
+            };
+            chans.push((b.source.clone(), b.no_data.map(|v| v as f32)));
+        }
+        let b = p.band(&names[0]).unwrap();
+        (b.width, b.height, chans)
     };
-    let band_name = band_name.clone();
+    let nch = chans.len();
 
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let view = &mut state.views[view_idx];
     handle_input(ui, &resp, view, w, h);
     event.hover_pixel = resp.hover_pos().map(|p| to_image(view, rect, p));
 
-    let max_level = src.levels().max(1) - 1;
+    let max_level = chans.iter().map(|c| c.0.levels()).min().unwrap().max(1) - 1;
     let level = level_for_zoom(view.zoom, max_level);
     let ds = (1u64 << level) as f64;
     let c = rect.center();
@@ -104,49 +107,69 @@ pub fn canvas_ui(ui: &mut egui::Ui, state: &mut AppState, view_idx: usize) -> Ca
     let mut failed = Vec::new();
     for (tx, ty, r) in visible_tiles(view, rect, w, h, level) {
         let screen_rect = ERect::from_min_max(screen(r.x, r.y), screen(r.x + r.w, r.y + r.h));
-        let key = TileKey {
-            product: view.product,
-            band: band_name.clone(),
-            level,
-            tx,
-            ty,
-        };
-        match state.cache.get(&key, &src) {
-            TileState::Ready(tile) => draws.push(TileDraw {
-                key,
-                tile,
+        let keys: Vec<TileKey> = names
+            .iter()
+            .map(|n| TileKey {
+                product: view.product,
+                band: n.clone(),
+                level,
+                tx,
+                ty,
+            })
+            .collect();
+        let states: Vec<TileState> = keys
+            .iter()
+            .zip(&chans)
+            .map(|(k, (src, _))| state.cache.get(k, src))
+            .collect();
+        // Single-band draws repeat channel 0 in the unused slots.
+        let ch = |c: usize| c.min(nch - 1);
+        let no_data = std::array::from_fn(|c| chans[ch(c)].1);
+        if states.iter().any(|s| matches!(s, TileState::Failed(_))) {
+            failed.push(screen_rect);
+        } else if states.iter().all(|s| matches!(s, TileState::Ready(_))) {
+            let tiles = std::array::from_fn(|c| match &states[ch(c)] {
+                TileState::Ready(t) => t.clone(),
+                _ => unreachable!(),
+            });
+            draws.push(TileDraw {
+                keys: std::array::from_fn(|c| keys[ch(c)].clone()),
+                tiles,
                 no_data,
                 screen: screen_rect,
                 uv: ERect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-            }),
-            TileState::Pending if level < max_level => {
-                let parent = TileKey {
+            });
+        } else if level < max_level {
+            // Coarser tiles cover this one, but only when every channel has its own.
+            let parents: Vec<TileKey> = keys
+                .iter()
+                .map(|k| TileKey {
                     level: level + 1,
                     tx: tx / 2,
                     ty: ty / 2,
-                    ..key
+                    ..k.clone()
+                })
+                .collect();
+            let tiles: Vec<_> = parents.iter().map_while(|k| state.cache.peek(k)).collect();
+            if tiles.len() == nch {
+                // This tile's footprint inside the coarser tile, in its pixels.
+                let (rows, cols) = tiles[0].shape();
+                let (ptx, pty) = (parents[0].tx, parents[0].ty);
+                let u = |v: u32, origin: u32, len: usize| {
+                    (v as f32 / 2.0 - (origin * TILE) as f32) / len as f32
                 };
-                if let Some(tile) = state.cache.peek(&parent) {
-                    // This tile's footprint inside the coarser tile, in its pixels.
-                    let (rows, cols) = tile.shape();
-                    let u = |v: u32, origin: u32, len: usize| {
-                        (v as f32 / 2.0 - (origin * TILE) as f32) / len as f32
-                    };
-                    let uv = ERect::from_min_max(
-                        pos2(u(r.x, parent.tx, cols), u(r.y, parent.ty, rows)),
-                        pos2(u(r.x + r.w, parent.tx, cols), u(r.y + r.h, parent.ty, rows)),
-                    );
-                    draws.push(TileDraw {
-                        key: parent,
-                        tile,
-                        no_data,
-                        screen: screen_rect,
-                        uv,
-                    });
-                }
+                let uv = ERect::from_min_max(
+                    pos2(u(r.x, ptx, cols), u(r.y, pty, rows)),
+                    pos2(u(r.x + r.w, ptx, cols), u(r.y + r.h, pty, rows)),
+                );
+                draws.push(TileDraw {
+                    keys: std::array::from_fn(|c| parents[ch(c)].clone()),
+                    tiles: std::array::from_fn(|c| tiles[ch(c)].clone()),
+                    no_data,
+                    screen: screen_rect,
+                    uv,
+                });
             }
-            TileState::Pending => {}
-            TileState::Failed(_) => failed.push(screen_rect),
         }
     }
 
@@ -159,7 +182,7 @@ pub fn canvas_ui(ui: &mut egui::Ui, state: &mut AppState, view_idx: usize) -> Ca
             id: view_idx as u64,
             frame: ui.ctx().cumulative_pass_nr(),
             stretch: view.stretch.clone(),
-            mode: 0,
+            mode,
             lut: view.palette.to_lut(),
             draws,
         },

@@ -11,7 +11,7 @@ const QUAD_BYTES: u64 = 6 * 4 * 4; // 6 vertices of (x, y, u, v) f32
 
 pub struct TileTexture {
     _texture: wgpu::Texture,
-    bind_group: wgpu::BindGroup,
+    view: wgpu::TextureView,
     last_used: u64,
 }
 
@@ -20,6 +20,8 @@ struct CanvasRes {
     lut: wgpu::Texture,
     bind_group: wgpu::BindGroup,
     vertices: wgpu::Buffer,
+    /// One tile bind group per draw, rebuilt each frame.
+    tile_groups: Vec<wgpu::BindGroup>,
 }
 
 pub struct GpuState {
@@ -138,20 +140,11 @@ impl GpuState {
             };
             let texture = self.texture(size, wgpu::TextureFormat::R32Float, &bytes);
             let view = texture.create_view(&Default::default());
-            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("tile"),
-                layout: &self.tile_layout,
-                // Single band: the same texture fills all three channel slots.
-                entries: &[0, 1, 2].map(|binding| wgpu::BindGroupEntry {
-                    binding,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                }),
-            });
             self.textures.insert(
                 key.clone(),
                 TileTexture {
                     _texture: texture,
-                    bind_group,
+                    view,
                     last_used: frame,
                 },
             );
@@ -263,6 +256,7 @@ impl GpuState {
                     lut,
                     bind_group,
                     vertices,
+                    tile_groups: Vec::new(),
                 },
             );
         }
@@ -270,9 +264,10 @@ impl GpuState {
 }
 
 pub struct TileDraw {
-    pub key: TileKey,
-    pub tile: Arc<Tile>,
-    pub no_data: Option<f32>,
+    /// Per channel; a single-band draw repeats its tile in all three slots.
+    pub keys: [TileKey; 3],
+    pub tiles: [Arc<Tile>; 3],
+    pub no_data: [Option<f32>; 3],
     /// Screen rect in points.
     pub screen: egui::Rect,
     /// Part of the tile texture to show, in 0..1.
@@ -302,7 +297,9 @@ impl CallbackTrait for CanvasCallback {
         };
         gpu.frame = self.frame;
         for d in &self.draws {
-            gpu.upload(&d.key, &d.tile, d.no_data);
+            for c in 0..3 {
+                gpu.upload(&d.keys[c], &d.tiles[c], d.no_data[c]);
+            }
         }
         gpu.evict_lru();
 
@@ -348,6 +345,22 @@ impl CallbackTrait for CanvasCallback {
         };
 
         gpu.ensure_canvas(self.id, self.draws.len());
+        let groups: Vec<_> = self
+            .draws
+            .iter()
+            .map(|d| {
+                let views = d.keys.each_ref().map(|k| &gpu.textures[k].view);
+                gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("tile"),
+                    layout: &gpu.tile_layout,
+                    entries: &[0, 1, 2].map(|i| wgpu::BindGroupEntry {
+                        binding: i as u32,
+                        resource: wgpu::BindingResource::TextureView(views[i]),
+                    }),
+                })
+            })
+            .collect();
+        gpu.canvases.get_mut(&self.id).unwrap().tile_groups = groups;
         let c = &gpu.canvases[&self.id];
         gpu.queue.write_buffer(&c.uniforms, 0, &uniforms);
         gpu.queue.write_buffer(&c.vertices, 0, &f32_bytes(verts));
@@ -373,12 +386,10 @@ impl CallbackTrait for CanvasCallback {
         pass.set_pipeline(&gpu.pipeline);
         pass.set_bind_group(0, &c.bind_group, &[]);
         pass.set_vertex_buffer(0, c.vertices.slice(..));
-        for (i, d) in self.draws.iter().enumerate() {
-            if let Some(t) = gpu.textures.get(&d.key) {
-                pass.set_bind_group(1, &t.bind_group, &[]);
-                let v = i as u32 * 6;
-                pass.draw(v..v + 6, 0..1);
-            }
+        for (i, g) in c.tile_groups.iter().enumerate() {
+            pass.set_bind_group(1, g, &[]);
+            let v = i as u32 * 6;
+            pass.draw(v..v + 6, 0..1);
         }
     }
 }

@@ -1,3 +1,4 @@
+use crate::dialogs::rgb::rgb_dialog;
 use crate::explorer::{explorer_ui, ExplorerAction};
 use crate::panels::color::{color_panel_ui, default_stretch};
 use crate::view::{canvas_ui, GpuState, Stretch, ViewSources, ViewState};
@@ -177,6 +178,29 @@ impl AppState {
         Some(self.views.len() - 1)
     }
 
+    /// Pushes an RGB view of `bands` (r, g, b) and returns its index; like `open_view`,
+    /// the default stretch is applied to this view only.
+    pub fn open_rgb_view(&mut self, pid: ProductId, bands: [String; 3]) -> Option<usize> {
+        let mut view = {
+            let p = self.product(pid)?.read().unwrap();
+            let [r, g, b] = [&bands[0], &bands[1], &bands[2]].map(|n| p.band(n));
+            let (r, g, b) = (r?, g?, b?);
+            let title = format!("{}: RGB({},{},{})", p.name, bands[0], bands[1], bands[2]);
+            ViewState {
+                sources: ViewSources::Rgb(bands.clone()),
+                stretch: [r, g, b].map(|b| Stretch::for_type(b.data_type)),
+                ..ViewState::single(pid, &bands[0], r.data_type, (r.width, r.height), title)
+            }
+        };
+        for name in &bands {
+            if let Some((dt, st)) = self.band_stats(pid, name) {
+                apply_default_stretch(&mut view, name, dt, &st);
+            }
+        }
+        self.views.push(view);
+        Some(self.views.len() - 1)
+    }
+
     pub fn stats_failed(&self, pid: ProductId, band: &str) -> bool {
         self.stats_failed.contains(&(pid, band.to_string()))
     }
@@ -253,6 +277,7 @@ pub struct SnapApp {
     dock: DockState<Pane>,
     toasts: Vec<(String, Instant)>,
     show_about: bool,
+    rgb_dialog: Option<ProductId>,
     render_state: Option<eframe::egui_wgpu::RenderState>,
 }
 
@@ -318,6 +343,7 @@ impl SnapApp {
             dock,
             toasts: Vec::new(),
             show_about: false,
+            rgb_dialog: None,
             render_state,
         }
     }
@@ -355,6 +381,7 @@ impl SnapApp {
                 self.state.active_view = Some(idx);
                 self.dock.push_to_focused_leaf(Pane::Image(idx));
             }
+            ExplorerAction::OpenRgb(product) => self.rgb_dialog = Some(product),
             ExplorerAction::Remove(NodeRef::Product(id)) => self.close_product(id),
             _ => {}
         }
@@ -478,6 +505,18 @@ impl eframe::App for SnapApp {
         }
         for a in actions {
             self.handle(a);
+        }
+        if let Some(pid) = self.rgb_dialog {
+            let mut open = self.state.product(pid).is_some();
+            if let Some(bands) = rgb_dialog(ctx, &mut self.state, pid, &mut open) {
+                if let Some(idx) = self.state.open_rgb_view(pid, bands) {
+                    self.state.active_view = Some(idx);
+                    self.dock.push_to_focused_leaf(Pane::Image(idx));
+                }
+            }
+            if !open {
+                self.rgb_dialog = None;
+            }
         }
         if self.show_about {
             egui::Window::new("About")
@@ -617,6 +656,54 @@ mod tests {
         assert_ne!(st.views[b].stretch[0], Stretch::for_type(DataType::U8));
         st.close_product(id);
         assert!(st.stats_started.is_empty());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn open_rgb_view_applies_default_to_new_view_only() {
+        snap_io_gdal::init_error_handler();
+        let dir = fixtures::temp_dir("gui-openrgb");
+        let fx = fixtures::make_fixture(&dir, "a.tif", 8, 8, DataType::U8, 3, false, None, None);
+        let mut st = AppState::new();
+        let id = st.open_path(&fx.path).unwrap();
+        let names: Vec<String> = st
+            .product(id)
+            .unwrap()
+            .read()
+            .unwrap()
+            .bands
+            .iter()
+            .map(|b| b.name.clone())
+            .collect();
+        let stats = BandStats {
+            min: 0.0,
+            max: 100.0,
+            mean: 50.0,
+            histogram: vec![4; 512],
+            bin_width: 100.0 / 512.0,
+            sample_count: 2048,
+            level: 0,
+        };
+        // statistics for bands 0 and 2 only
+        for i in [0, 2] {
+            st.product(id).unwrap().read().unwrap().bands[i]
+                .stats
+                .set(stats.clone())
+                .unwrap();
+        }
+        let a = st.open_view(id, &names[0]).unwrap();
+        st.views[a].stretch[0] = Stretch::for_type(DataType::U8); // user choice
+        let rgb = [names[2].clone(), names[1].clone(), names[0].clone()];
+        let b = st.open_rgb_view(id, rgb.clone()).unwrap();
+        let u8r = Stretch::for_type(DataType::U8);
+        assert_eq!(st.views[a].stretch[0], u8r);
+        let v = &st.views[b];
+        assert!(matches!(&v.sources, ViewSources::Rgb(n) if *n == rgb));
+        assert_ne!(v.stretch[0], u8r);
+        assert_eq!(v.stretch[1], u8r); // no statistics yet
+        assert_ne!(v.stretch[2], u8r);
+        assert_eq!(v.title, format!("a: RGB({},{},{})", rgb[0], rgb[1], rgb[2]));
+        st.close_product(id);
         std::fs::remove_dir_all(dir).ok();
     }
 

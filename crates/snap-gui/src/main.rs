@@ -1,4 +1,5 @@
 mod app;
+mod dialogs;
 mod explorer;
 mod palette_cpd;
 mod panels;

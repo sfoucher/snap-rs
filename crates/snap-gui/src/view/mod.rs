@@ -73,7 +73,6 @@ impl Palette {
     }
 }
 
-#[allow(dead_code)] // Rgb is opened by the RGB view task
 pub enum ViewSources {
     Single(String),
     Rgb([String; 3]),
