@@ -1,5 +1,5 @@
 use crate::explorer::{explorer_ui, ExplorerAction};
-use crate::view::ViewState;
+use crate::view::{canvas_ui, GpuState, ViewState};
 use egui_dock::{DockArea, DockState, NodeIndex};
 use snap_core::{Product, ProductId, TileCache, TileKey};
 use snap_io::{IoError, Registry};
@@ -72,8 +72,11 @@ impl AppState {
     pub fn close_product(&mut self, id: ProductId) {
         self.products.retain(|p| p.read().unwrap().id != id);
         self.cache.evict_product(id);
+        let remap = view_remap(&self.views, id);
+        self.active_view = self
+            .active_view
+            .and_then(|i| remap.get(i).copied().flatten());
         self.views.retain(|v| v.product != id);
-        self.active_view = None;
         if self.selected.as_ref().is_some_and(|s| s.product() == id) {
             self.selected = None;
         }
@@ -83,6 +86,20 @@ impl AppState {
     pub fn product(&self, id: ProductId) -> Option<&Arc<RwLock<Product>>> {
         self.products.iter().find(|p| p.read().unwrap().id == id)
     }
+}
+
+/// New index of each view once `id`'s views are dropped (None = dropped).
+fn view_remap(views: &[ViewState], id: ProductId) -> Vec<Option<usize>> {
+    let mut next = 0;
+    views
+        .iter()
+        .map(|v| {
+            (v.product != id).then(|| {
+                next += 1;
+                next - 1
+            })
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -108,6 +125,7 @@ pub struct SnapApp {
     dock: DockState<Pane>,
     toasts: Vec<(String, Instant)>,
     show_about: bool,
+    render_state: Option<eframe::egui_wgpu::RenderState>,
 }
 
 struct Viewer<'a> {
@@ -138,16 +156,26 @@ impl egui_dock::TabViewer for Viewer<'_> {
         match tab {
             Pane::Explorer => self.actions.extend(explorer_ui(ui, self.state)),
             Pane::Image(i) => {
-                let title = self.state.views.get(*i).map(|v| v.title.as_str());
-                ui.label(title.unwrap_or("Image"));
+                canvas_ui(ui, self.state, *i);
             }
             _ => {}
         }
     }
+
+    fn scroll_bars(&self, tab: &Pane) -> [bool; 2] {
+        // The canvas fills its tab and owns the wheel for zooming.
+        let scroll = !matches!(tab, Pane::Image(_));
+        [scroll, scroll]
+    }
 }
 
 impl SnapApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let render_state = cc.wgpu_render_state.clone();
+        if let Some(rs) = &render_state {
+            let gpu = GpuState::new(rs);
+            rs.renderer.write().callback_resources.insert(gpu);
+        }
         let mut dock = DockState::new(Vec::new());
         let tree = dock.main_surface_mut();
         let [centre, _] = tree.split_left(NodeIndex::root(), 0.2, vec![Pane::Explorer]);
@@ -161,6 +189,7 @@ impl SnapApp {
             dock,
             toasts: Vec::new(),
             show_about: false,
+            render_state,
         }
     }
 
@@ -172,19 +201,13 @@ impl SnapApp {
 
     fn close_product(&mut self, id: ProductId) {
         // Image(i) indexes state.views, so drop closed tabs and shift the rest.
-        let mut next = 0;
-        let remap: Vec<Option<usize>> = self
-            .state
-            .views
-            .iter()
-            .map(|v| {
-                (v.product != id).then(|| {
-                    next += 1;
-                    next - 1
-                })
-            })
-            .collect();
+        let remap = view_remap(&self.state.views, id);
         self.state.close_product(id);
+        if let Some(rs) = &self.render_state {
+            if let Some(gpu) = rs.renderer.write().callback_resources.get_mut::<GpuState>() {
+                gpu.evict_product(id);
+            }
+        }
         self.dock.retain_tabs(|t| {
             if let Pane::Image(i) = t {
                 match remap.get(*i).copied().flatten() {
@@ -198,8 +221,22 @@ impl SnapApp {
 
     fn handle(&mut self, action: ExplorerAction) {
         match action {
-            ExplorerAction::OpenView(product, title) => {
-                self.state.views.push(ViewState { product, title });
+            ExplorerAction::OpenView(product, band) => {
+                let Some(view) = self.state.product(product).and_then(|p| {
+                    let p = p.read().unwrap();
+                    let b = p.band(&band)?;
+                    let title = format!("{}: {}", p.name, b.name);
+                    Some(ViewState::single(
+                        product,
+                        &band,
+                        b.data_type,
+                        (b.width, b.height),
+                        title,
+                    ))
+                }) else {
+                    return;
+                };
+                self.state.views.push(view);
                 let idx = self.state.views.len() - 1;
                 self.state.active_view = Some(idx);
                 self.dock.push_to_focused_leaf(Pane::Image(idx));
@@ -316,6 +353,14 @@ impl eframe::App for SnapApp {
         };
         DockArea::new(&mut self.dock).show(ctx, &mut viewer);
         actions.append(&mut viewer.actions);
+        if let Some((_, Pane::Image(i))) = self.dock.find_active_focused() {
+            self.state.active_view = Some(*i);
+        }
+        if let Some(i) = self.state.active_view {
+            if self.dock.find_tab(&Pane::Image(i)).is_none() {
+                self.state.active_view = None;
+            }
+        }
         for a in actions {
             self.handle(a);
         }
@@ -377,6 +422,19 @@ mod tests {
         assert_eq!(st.products.len(), 0);
         assert_eq!(st.cache.used_bytes(), 0);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn view_remap_drops_closed_product_and_shifts_rest() {
+        let v = |p| ViewState {
+            product: ProductId(p),
+            ..crate::view::test_view(1.0, (0.0, 0.0))
+        };
+        let views = [v(1), v(2), v(1), v(3)];
+        assert_eq!(
+            view_remap(&views, ProductId(1)),
+            vec![None, Some(0), None, Some(1)]
+        );
     }
 
     #[test]
