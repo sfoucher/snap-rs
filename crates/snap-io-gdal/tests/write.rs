@@ -69,6 +69,8 @@ fn write_read_roundtrip() {
         px(&cache, &src, 2, 999, 699)
     );
     assert_eq!(gt_of(&out), f.gt);
+    let ds = Dataset::open(&out).unwrap();
+    assert_eq!(ds.rasterband(1).unwrap().overview_count().unwrap(), 1);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -174,7 +176,10 @@ fn invalid_subset_rejected() {
             subset: Some(SubsetRegion { rect, bands }),
             ..Default::default()
         };
-        assert!(w.write(&src, &out, &opts, &cache).is_err());
+        assert!(matches!(
+            w.write(&src, &out, &opts, &cache),
+            Err(snap_io::IoError::Write(_))
+        ));
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -198,6 +203,25 @@ fn cog_and_compression_reopen() {
         px(&cache, &src, 2, 700, 600)
     );
     let ds = Dataset::open(&out).unwrap();
-    assert!(ds.rasterband(1).unwrap().overview_count().unwrap() >= 1);
+    let b = ds.rasterband(3).unwrap();
+    assert!(b.overview_count().unwrap() >= 1);
+    // AVERAGE, not the COG default CUBIC: overview (400,2) straddles the value wrap and is the 2x2 mean (within 1)
+    let ov: Vec<i16> = b
+        .overview(0)
+        .unwrap()
+        .read_as((400, 2), (1, 1), (1, 1), None)
+        .unwrap()
+        .into_shape_and_vec()
+        .1;
+    let mean = (px(&cache, &src, 2, 800, 4)
+        + px(&cache, &src, 2, 801, 4)
+        + px(&cache, &src, 2, 800, 5)
+        + px(&cache, &src, 2, 801, 5))
+        / 4.0;
+    assert!(
+        (f64::from(ov[0]) - mean).abs() <= 1.0,
+        "{} vs {mean}",
+        ov[0]
+    );
     std::fs::remove_dir_all(dir).unwrap();
 }

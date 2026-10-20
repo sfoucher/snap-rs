@@ -178,6 +178,15 @@ impl ProductWriter for GeoTiffWriter {
                 })
                 .collect::<Result<_, _>>()?
         };
+        if let Some(b) = bands
+            .iter()
+            .find(|b| (b.width, b.height) != (product.width, product.height))
+        {
+            return Err(IoError::Write(format!(
+                "band '{}' is {}x{}, product is {}x{}",
+                b.name, b.width, b.height, product.width, product.height
+            )));
+        }
         if bands.is_empty() {
             return Err(IoError::Write("no bands to write".into()));
         }
@@ -203,31 +212,40 @@ impl ProductWriter for GeoTiffWriter {
             ("COMPRESS", comp),
             ("BIGTIFF", "IF_SAFER"),
         ])?;
-        let mut ds = match output_type(&plan.bands) {
-            DataType::U8 => write_pixels(&plan, &tmp, &co, |v| v as u8)?,
-            DataType::I8 => write_pixels(&plan, &tmp, &co, |v| v as i8)?,
-            DataType::U16 => write_pixels(&plan, &tmp, &co, |v| v as u16)?,
-            DataType::I16 => write_pixels(&plan, &tmp, &co, |v| v as i16)?,
-            DataType::U32 => write_pixels(&plan, &tmp, &co, |v| v as u32)?,
-            DataType::I32 => write_pixels(&plan, &tmp, &co, |v| v as i32)?,
-            DataType::F32 => write_pixels(&plan, &tmp, &co, |v| v as f32)?,
-            DataType::F64 => write_pixels(&plan, &tmp, &co, |v| v)?,
-        };
-        if opts.cog {
-            let cog_opts = options(&[("COMPRESS", comp), ("BIGTIFF", "IF_SAFER")])?;
-            let drv = DriverManager::get_driver_by_name("COG").map_err(gerr)?;
-            let res = ds.create_copy(&drv, path, &cog_opts).map_err(gerr);
-            drop(ds);
-            let _ = std::fs::remove_file(&tmp);
-            res?;
-        } else {
-            let n = Pyramid::needed_levels(rect.w, rect.h);
-            let factors: Vec<i32> = (1..n).map(|l| 1 << l).collect();
-            if !factors.is_empty() {
+        let result = (|| -> Result<(), IoError> {
+            clear_gdal_error();
+            let mut ds = match output_type(&plan.bands) {
+                DataType::U8 => write_pixels(&plan, &tmp, &co, |v| v as u8)?,
+                DataType::I8 => write_pixels(&plan, &tmp, &co, |v| v as i8)?,
+                DataType::U16 => write_pixels(&plan, &tmp, &co, |v| v as u16)?,
+                DataType::I16 => write_pixels(&plan, &tmp, &co, |v| v as i16)?,
+                DataType::U32 => write_pixels(&plan, &tmp, &co, |v| v as u32)?,
+                DataType::I32 => write_pixels(&plan, &tmp, &co, |v| v as i32)?,
+                DataType::F32 => write_pixels(&plan, &tmp, &co, |v| v as f32)?,
+                DataType::F64 => write_pixels(&plan, &tmp, &co, |v| v)?,
+            };
+            if opts.cog {
+                let cog_opts = options(&[
+                    ("COMPRESS", comp),
+                    ("BIGTIFF", "IF_SAFER"),
+                    ("RESAMPLING", "AVERAGE"),
+                ])?;
+                let drv = DriverManager::get_driver_by_name("COG").map_err(gerr)?;
                 clear_gdal_error();
-                ds.build_overviews("AVERAGE", &factors, &[]).map_err(gerr)?;
+                ds.create_copy(&drv, path, &cog_opts).map_err(gerr)?;
+            } else {
+                let n = Pyramid::needed_levels(rect.w, rect.h);
+                let factors: Vec<i32> = (1..n).map(|l| 1 << l).collect();
+                if !factors.is_empty() {
+                    clear_gdal_error();
+                    ds.build_overviews("AVERAGE", &factors, &[]).map_err(gerr)?;
+                }
             }
+            Ok(())
+        })();
+        if opts.cog {
+            let _ = std::fs::remove_file(&tmp);
         }
-        Ok(())
+        result
     }
 }
