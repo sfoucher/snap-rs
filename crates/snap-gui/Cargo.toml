@@ -2,3 +2,18 @@
 name = "snap-gui"
 version = "0.1.0"
 edition.workspace = true
+
+[dependencies]
+snap-core = { path = "../snap-core" }
+snap-io = { path = "../snap-io" }
+snap-io-gdal = { path = "../snap-io-gdal" }
+eframe = { workspace = true, features = ["wgpu"] }
+egui.workspace = true
+egui_dock.workspace = true
+rfd.workspace = true
+log.workspace = true
+env_logger.workspace = true
+sysinfo.workspace = true
+
+[dev-dependencies]
+gdal.workspace = true
