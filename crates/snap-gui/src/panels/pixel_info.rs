@@ -1,5 +1,5 @@
 use crate::app::AppState;
-use snap_core::{GeoPos, ProductId, TileKey, TILE};
+use snap_core::{DataType, GeoPos, ProductId, TileKey, TILE};
 
 pub struct PixelInfo {
     pub image_x: u32,
@@ -10,14 +10,12 @@ pub struct PixelInfo {
     /// `None` = tile not cached yet (never triggers a read).
     pub bands: Vec<(String, Option<f64>)>,
     pub masks: Vec<(String, bool)>,
+    // Private, parallel to `bands`: unit, and whether the band does not cover this pixel.
+    units: Vec<Option<String>>,
+    out_of_band: Vec<bool>,
 }
 
-fn peek_value(
-    state: &AppState,
-    key: TileKey,
-    ix: u32,
-    iy: u32,
-) -> Option<(snap_core::DataType, f64)> {
+fn peek_value(state: &AppState, key: TileKey, ix: u32, iy: u32) -> Option<(DataType, f64)> {
     let t = state.cache.peek(&key)?;
     let (r, c) = ((iy % TILE) as usize, (ix % TILE) as usize);
     Some((t.data_type(), t.get_f64(r, c)))
@@ -38,6 +36,12 @@ pub fn pixel_info_at(state: &AppState, product: ProductId, x: f64, y: f64) -> Op
         tx: ix / TILE,
         ty: iy / TILE,
     };
+    let out_of_band: Vec<bool> = p
+        .bands
+        .iter()
+        .map(|b| ix >= b.width || iy >= b.height)
+        .collect();
+    let units = p.bands.iter().map(|b| b.unit.clone()).collect();
     let bands = p
         .bands
         .iter()
@@ -47,7 +51,7 @@ pub fn pixel_info_at(state: &AppState, product: ProductId, x: f64, y: f64) -> Op
             } else {
                 peek_value(state, key(&b.name), ix, iy).map(|(dt, raw)| {
                     let nd = b.no_data.is_some_and(|nd| match dt {
-                        snap_core::DataType::F32 => raw as f32 == nd as f32,
+                        DataType::F32 => raw as f32 == nd as f32,
                         _ => raw == nd,
                     });
                     if nd {
@@ -84,6 +88,8 @@ pub fn pixel_info_at(state: &AppState, product: ProductId, x: f64, y: f64) -> Op
             .filter(|n| !n.is_empty()),
         bands,
         masks,
+        units,
+        out_of_band,
     })
 }
 
@@ -142,9 +148,17 @@ pub fn pixel_info_ui(ui: &mut egui::Ui, info: Option<&PixelInfo>) {
     });
     ui.separator();
     egui::Grid::new("pixel_bands").striped(true).show(ui, |ui| {
-        for (n, v) in &i.bands {
+        for (k, (n, v)) in i.bands.iter().enumerate() {
             ui.label(n);
-            ui.label(v.map_or("loading…".into(), sig4));
+            let text = match (v, i.out_of_band[k]) {
+                (_, true) => "—".to_string(),
+                (None, _) => "loading…".to_string(),
+                (Some(v), _) => match &i.units[k] {
+                    Some(u) => format!("{} {u}", sig4(*v)),
+                    None => sig4(*v),
+                },
+            };
+            ui.label(text);
             ui.end_row();
         }
         for (n, on) in &i.masks {
@@ -194,7 +208,9 @@ mod tests {
     fn pixel_info_reads_cached_value() {
         let (st, id, dir) = open("pi-read", 1000, 700, Some(32618));
         prefetch(&st, id, 0, 1, 1);
+        st.product(id).unwrap().write().unwrap().bands[0].unit = Some("m".into());
         let i = pixel_info_at(&st, id, 600.0, 600.0).unwrap();
+        assert_eq!(i.units[0].as_deref(), Some("m"));
         assert_eq!((i.image_x, i.image_y), (600, 600));
         assert_eq!(i.bands[0].1, Some(((600 * 1000 + 600) % 1000) as f64));
         assert_eq!(i.bands[1].1, None, "band 2 tile not cached");
@@ -223,6 +239,42 @@ mod tests {
         let (st, id, dir) = open("pi-nogeo", 64, 32, None);
         let i = pixel_info_at(&st, id, 3.0, 4.0).unwrap();
         assert!(i.geo.is_none() && i.crs_xy.is_none() && i.crs_name.is_none());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn pixel_info_masks_cached_and_uncached() {
+        use snap_core::{Mask, MemorySource, RasterSource};
+        use std::sync::Arc;
+        let (st, id, dir) = open("pi-mask", 64, 32, Some(32618));
+        let mut data = ndarray::Array2::<f32>::zeros((32, 64));
+        data[(4, 3)] = 1.0;
+        let src: Arc<dyn RasterSource> = Arc::new(MemorySource::new(data));
+        for name in ["m_cached", "m_cold"] {
+            st.product(id).unwrap().write().unwrap().masks.push(Mask {
+                name: name.into(),
+                expr: String::new(),
+                color: [255, 0, 0, 255],
+                opacity: 0.5,
+                source: src.clone(),
+            });
+        }
+        let key = TileKey {
+            product: id,
+            band: "m_cached".into(),
+            level: 0,
+            tx: 0,
+            ty: 0,
+        };
+        st.cache.get_blocking(&key, &src).unwrap();
+        let i = pixel_info_at(&st, id, 3.0, 4.0).unwrap();
+        assert_eq!(
+            i.masks,
+            vec![
+                ("m_cached".to_string(), true),
+                ("m_cold".to_string(), false)
+            ]
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
