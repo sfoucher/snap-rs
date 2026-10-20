@@ -69,6 +69,13 @@ impl AppState {
         Ok(id)
     }
 
+    /// Opens `path`, queuing a toast instead of returning the error.
+    pub fn open_or_report(&mut self, path: &Path) {
+        if let Err(e) = self.open_path(path) {
+            self.errors.push(format!("{}: {e}", path.display()));
+        }
+    }
+
     pub fn close_product(&mut self, id: ProductId) {
         self.products.retain(|p| p.read().unwrap().id != id);
         self.cache.evict_product(id);
@@ -193,10 +200,8 @@ impl SnapApp {
         }
     }
 
-    fn open(&mut self, path: &Path) {
-        if let Err(e) = self.state.open_path(path) {
-            self.state.errors.push(format!("{}: {e}", path.display()));
-        }
+    pub fn open(&mut self, path: &Path) {
+        self.state.open_or_report(path);
     }
 
     fn close_product(&mut self, id: ProductId) {
@@ -440,5 +445,29 @@ mod tests {
     #[test]
     fn open_bad_path_returns_error_not_panic() {
         assert!(AppState::new().open_path(Path::new("nope.tif")).is_err());
+    }
+
+    #[test]
+    fn open_or_report_queues_errors_and_keeps_going() {
+        snap_io_gdal::init_error_handler();
+        let dir = fixtures::temp_dir("gui-args");
+        let fx = fixtures::make_fixture(
+            &dir,
+            "a.tif",
+            8,
+            8,
+            snap_core::DataType::U8,
+            1,
+            false,
+            None,
+            None,
+        );
+        let mut st = AppState::new();
+        st.open_or_report(Path::new("nope.tif"));
+        st.open_or_report(&fx.path);
+        assert_eq!(st.products.len(), 1);
+        assert_eq!(st.errors.len(), 1);
+        assert!(st.errors[0].starts_with("nope.tif: "));
+        std::fs::remove_dir_all(dir).ok();
     }
 }
