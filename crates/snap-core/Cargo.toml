@@ -7,3 +7,4 @@ edition.workspace = true
 ndarray.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
+proj.workspace = true

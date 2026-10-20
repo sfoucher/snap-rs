@@ -7,3 +7,11 @@ pub enum CoreError {
     #[error("{0}")]
     Other(String),
 }
+
+#[derive(Debug, thiserror::Error)]
+pub enum GeoError {
+    #[error("singular geotransform")]
+    SingularTransform,
+    #[error("proj: {0}")]
+    Proj(String),
+}
