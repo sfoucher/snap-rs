@@ -97,3 +97,19 @@ fn registry_picks_geotiff_over_generic() {
     assert_eq!(reg.open(&png).unwrap().product_type, "GDAL:PNG");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn projection_without_geotransform_uses_nogeocoding() {
+    let dir = temp_dir("gt-nogt");
+    let path = dir.join("p.tif");
+    let drv = DriverManager::get_driver_by_name("GTiff").unwrap();
+    let mut ds = drv
+        .create_with_band_type::<u8, _>(&path, 16, 16, 1)
+        .unwrap();
+    ds.set_projection(&SpatialRef::from_epsg(32618).unwrap().to_wkt().unwrap())
+        .unwrap();
+    drop(ds);
+    let p = GeoTiffReader.read(&path).unwrap();
+    assert!(p.geocoding.pixel_to_geo(0.0, 0.0).is_none());
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -5,6 +5,9 @@ use snap_core::{MetadataAttribute, MetadataElement, MetadataValue};
 pub(crate) fn metadata_tree(ds: &Dataset) -> MetadataElement {
     let mut root = MetadataElement::new("metadata");
     for domain in ds.metadata_domains() {
+        if domain.starts_with("xml:") {
+            continue;
+        }
         let name = if domain.is_empty() {
             "DEFAULT"
         } else {

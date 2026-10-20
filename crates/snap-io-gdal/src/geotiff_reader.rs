@@ -1,4 +1,4 @@
-use crate::errors::{init_error_handler, open_dataset};
+use crate::errors::{clear_gdal_error, init_error_handler, last_gdal_error, open_dataset};
 use crate::metadata::metadata_tree;
 use crate::source::{map_type, open_err};
 use crate::GdalSource;
@@ -103,10 +103,18 @@ pub(crate) fn geocoding_from(ds: &Dataset) -> Result<Arc<dyn GeoCoding>, IoError
     if wkt.is_empty() {
         return Ok(Arc::new(NoGeoCoding));
     }
-    let gt = ds.geo_transform().map_err(|e| IoError::Open {
-        path: ds.description().unwrap_or_default().into(),
-        msg: e.to_string(),
-    })?;
+    clear_gdal_error();
+    let gt = match ds.geo_transform() {
+        Ok(gt) => gt,
+        Err(e) => {
+            let m = last_gdal_error();
+            log::warn!(
+                "no geotransform, using NoGeoCoding: {}",
+                if m.is_empty() { e.to_string() } else { m }
+            );
+            return Ok(Arc::new(NoGeoCoding));
+        }
+    };
     let srs = ds.spatial_ref().ok();
     let epsg = srs.as_ref().and_then(|s| {
         (s.auth_name().ok()?.eq_ignore_ascii_case("EPSG"))
