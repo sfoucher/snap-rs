@@ -1,0 +1,203 @@
+mod fixtures;
+use fixtures::*;
+use gdal::Dataset;
+use snap_core::{DataType, Product, Rect, TileCache, TileKey};
+use snap_io::{Compression, Registry, SubsetRegion, WriteOpts};
+use std::path::Path;
+use std::sync::Arc;
+
+fn px(cache: &TileCache, p: &Product, band: usize, x: u32, y: u32) -> f64 {
+    let b = &p.bands[band];
+    let key = TileKey {
+        product: p.id,
+        band: b.name.clone(),
+        level: 0,
+        tx: x / 512,
+        ty: y / 512,
+    };
+    let t = cache.get_blocking(&key, &b.source).unwrap();
+    t.get_f64((y % 512) as usize, (x % 512) as usize)
+}
+
+fn gt_of(path: &Path) -> [f64; 6] {
+    Dataset::open(path).unwrap().geo_transform().unwrap()
+}
+
+fn setup(tag: &str) -> (std::path::PathBuf, Fixture, Registry, Arc<TileCache>) {
+    let dir = temp_dir(tag);
+    let f = make_fixture(
+        &dir,
+        "in.tif",
+        1000,
+        700,
+        DataType::I16,
+        3,
+        false,
+        Some(-9999.0),
+        Some(32618),
+    );
+    let mut reg = Registry::default();
+    snap_io_gdal::register(&mut reg);
+    (dir, f, reg, TileCache::new(256 << 20).0)
+}
+
+fn export(reg: &Registry, cache: &TileCache, src: &Product, out: &Path, opts: &WriteOpts) {
+    reg.writer("GeoTIFF")
+        .unwrap()
+        .write(src, out, opts, cache)
+        .unwrap();
+}
+
+#[test]
+fn write_read_roundtrip() {
+    let (dir, f, reg, cache) = setup("wr");
+    let src = reg.open(&f.path).unwrap();
+    let out = dir.join("out.tif");
+    export(&reg, &cache, &src, &out, &WriteOpts::default());
+    let back = reg.open(&out).unwrap();
+    assert_eq!((back.width, back.height), (1000, 700));
+    assert_eq!(back.bands.len(), 3);
+    assert_eq!(back.bands[0].no_data, Some(-9999.0));
+    assert_eq!(back.bands[1].data_type, DataType::I16);
+    assert_eq!(px(&cache, &back, 1, 10, 10), px(&cache, &src, 1, 10, 10));
+    assert_eq!(
+        px(&cache, &back, 1, 10, 10),
+        (10 * 1000 + 10 + 100) as f64 % 1000.0
+    );
+    assert_eq!(
+        px(&cache, &back, 2, 999, 699),
+        px(&cache, &src, 2, 999, 699)
+    );
+    assert_eq!(gt_of(&out), f.gt);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn subset_shifts_geotransform() {
+    let (dir, f, reg, cache) = setup("ws");
+    let src = reg.open(&f.path).unwrap();
+    let out = dir.join("sub.tif");
+    let opts = WriteOpts {
+        subset: Some(SubsetRegion {
+            rect: Rect {
+                x: 100,
+                y: 50,
+                w: 600,
+                h: 600,
+            },
+            bands: vec![],
+        }),
+        ..Default::default()
+    };
+    export(&reg, &cache, &src, &out, &opts);
+    let back = reg.open(&out).unwrap();
+    assert_eq!((back.width, back.height), (600, 600));
+    let gt = gt_of(&out);
+    assert_eq!(gt[0], f.gt[0] + 100.0 * f.gt[1]);
+    assert_eq!(gt[3], f.gt[3] + 50.0 * f.gt[5]);
+    assert_eq!((gt[1], gt[5]), (f.gt[1], f.gt[5]));
+    assert_eq!(px(&cache, &back, 0, 0, 0), px(&cache, &src, 0, 100, 50));
+    assert_eq!(
+        px(&cache, &back, 0, 599, 599),
+        px(&cache, &src, 0, 699, 649)
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn subset_band_selection_and_order() {
+    let (dir, f, reg, cache) = setup("wb");
+    let src = reg.open(&f.path).unwrap();
+    let out = dir.join("bands.tif");
+    let opts = WriteOpts {
+        subset: Some(SubsetRegion {
+            rect: Rect {
+                x: 0,
+                y: 0,
+                w: 1000,
+                h: 700,
+            },
+            bands: vec!["band_3".into(), "band_1".into()],
+        }),
+        ..Default::default()
+    };
+    export(&reg, &cache, &src, &out, &opts);
+    let back = reg.open(&out).unwrap();
+    assert_eq!(back.bands.len(), 2);
+    assert_eq!(back.bands[0].name, "band_3");
+    let (a, b3, b1) = (
+        px(&cache, &back, 0, 5, 5),
+        px(&cache, &src, 2, 5, 5),
+        px(&cache, &src, 0, 5, 5),
+    );
+    assert_eq!(a, b3);
+    assert_ne!(a, b1);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn invalid_subset_rejected() {
+    let (dir, f, reg, cache) = setup("wi");
+    let src = reg.open(&f.path).unwrap();
+    let w = reg.writer("GeoTIFF").unwrap();
+    let out = dir.join("x.tif");
+    for (rect, bands) in [
+        (
+            Rect {
+                x: 900,
+                y: 0,
+                w: 200,
+                h: 10,
+            },
+            vec![],
+        ),
+        (
+            Rect {
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 10,
+            },
+            vec![],
+        ),
+        (
+            Rect {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 10,
+            },
+            vec!["nope".to_string()],
+        ),
+    ] {
+        let opts = WriteOpts {
+            subset: Some(SubsetRegion { rect, bands }),
+            ..Default::default()
+        };
+        assert!(w.write(&src, &out, &opts, &cache).is_err());
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn cog_and_compression_reopen() {
+    let (dir, f, reg, cache) = setup("wc");
+    let src = reg.open(&f.path).unwrap();
+    let out = dir.join("cog.tif");
+    let opts = WriteOpts {
+        cog: true,
+        compression: Compression::Deflate,
+        ..Default::default()
+    };
+    export(&reg, &cache, &src, &out, &opts);
+    assert!(!dir.join("cog.tif.tmp.tif").exists());
+    let back = reg.open(&out).unwrap();
+    assert_eq!((back.width, back.height, back.bands.len()), (1000, 700, 3));
+    assert_eq!(
+        px(&cache, &back, 2, 700, 600),
+        px(&cache, &src, 2, 700, 600)
+    );
+    let ds = Dataset::open(&out).unwrap();
+    assert!(ds.rasterband(1).unwrap().overview_count().unwrap() >= 1);
+    std::fs::remove_dir_all(dir).unwrap();
+}
