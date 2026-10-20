@@ -19,4 +19,4 @@ mod stats;
 pub use geocoding::{Crs, CrsGeoCoding, GeoCoding, GeoPos, NoGeoCoding, PixelPos};
 pub use metadata::{MetadataAttribute, MetadataElement, MetadataValue};
 pub use product::{Band, Mask, Product, ProductId};
-pub use stats::BandStats;
+pub use stats::{compute_stats, compute_stats_coarsest, BandStats};
