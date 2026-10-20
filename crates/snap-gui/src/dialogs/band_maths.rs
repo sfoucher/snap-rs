@@ -129,7 +129,7 @@ fn underline_range(text: &str, span: Span) -> Option<Range<usize>> {
     Some(s..e)
 }
 
-fn layout_job(text: &str, bad: Option<Range<usize>>, font: FontId, color: Color32) -> LayoutJob {
+fn layout_job(text: &str, bad: Option<Span>, font: FontId, color: Color32) -> LayoutJob {
     let fmt = |underline| TextFormat {
         font_id: font.clone(),
         color,
@@ -137,7 +137,8 @@ fn layout_job(text: &str, bad: Option<Range<usize>>, font: FontId, color: Color3
         ..Default::default()
     };
     let mut job = LayoutJob::default();
-    match bad {
+    // Clamp against the text actually laid out: egui re-runs the layouter on edited text.
+    match bad.and_then(|s| underline_range(text, s)) {
         Some(r) => {
             job.append(&text[..r.start], 0.0, fmt(Stroke::NONE));
             job.append(
@@ -177,14 +178,13 @@ pub fn band_maths_dialog(
         *open = false;
         return None;
     };
-    let (bands, mut d, taken) = {
+    let (bands, mut d) = {
         let p = prod.read().unwrap();
         let bands: Vec<String> = p.bands.iter().map(|b| b.name.clone()).collect();
         let d: Dlg = ctx
             .data(|m| m.get_temp(dlg_id()))
             .unwrap_or_else(|| Dlg::new(&p, false));
-        let taken = name_taken(&p, &d.name);
-        (bands, d, taken)
+        (bands, d)
     };
     let mut result = None;
     let mut close = false;
@@ -197,6 +197,7 @@ pub fn band_maths_dialog(
                 ui.label("Name");
                 ui.text_edit_singleline(&mut d.name);
             });
+            let taken = name_taken(&prod.read().unwrap(), d.name.trim());
             if d.name.trim().is_empty() {
                 ui.colored_label(Color32::LIGHT_RED, "name is empty");
             } else if taken {
@@ -226,16 +227,13 @@ pub fn band_maths_dialog(
                     },
                 });
             }
-            let bad = res
-                .as_ref()
-                .err()
-                .and_then(|e| underline_range(&d.expr, err_span(e)));
+            let bad = res.as_ref().err().map(err_span);
             let (font, color) = (
                 egui::TextStyle::Monospace.resolve(ui.style()),
                 ui.visuals().text_color(),
             );
             let mut layouter = |ui: &egui::Ui, text: &str, wrap: f32| {
-                let mut job = layout_job(text, bad.clone(), font.clone(), color);
+                let mut job = layout_job(text, bad, font.clone(), color);
                 job.wrap.max_width = wrap;
                 ui.fonts(|f| f.layout_job(job))
             };
@@ -426,6 +424,26 @@ mod tests {
         assert!(st.cache.peek(&key).is_none());
         assert!(st.product(id).unwrap().read().unwrap().masks.is_empty());
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn layout_job_survives_stale_span() {
+        let font = FontId::default();
+        let c = Color32::WHITE;
+        // Span from "band_99" applied to the text after a Backspace, and mid-char.
+        let sp = |start, end| Some(Span { start, end });
+        for (text, span) in [
+            ("band_9", sp(0, 7)),
+            ("é+", sp(1, 2)),
+            ("", sp(0, 7)),
+            ("a +", sp(3, 3)),
+        ] {
+            let job = layout_job(text, span, font.clone(), c);
+            assert_eq!(job.text, text);
+        }
+        let job = layout_job("band_9", sp(0, 7), font, c);
+        assert_eq!(job.sections.len(), 3);
+        assert_eq!(job.sections[1].byte_range, 0..6);
     }
 
     #[test]

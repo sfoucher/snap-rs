@@ -187,7 +187,7 @@ pub fn canvas_ui(ui: &mut egui::Ui, state: &mut AppState, view_idx: usize) -> Ca
     // Mask overlays: ready tiles at the image's level only (no coarser fallback).
     let mut overlays = Vec::new();
     for (i, (name, src, color)) in masks.iter().enumerate() {
-        if src.levels() <= level {
+        if src.levels() <= level || src.size() != (w, h) {
             continue;
         }
         let mut draws = Vec::new();

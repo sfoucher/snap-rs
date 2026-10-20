@@ -44,6 +44,10 @@ struct State {
 impl Inner {
     fn insert(&self, key: TileKey, tile: Arc<Tile>) {
         let mut st = self.state.lock().unwrap();
+        self.insert_locked(&mut st, key, tile);
+    }
+
+    fn insert_locked(&self, st: &mut State, key: TileKey, tile: Arc<Tile>) {
         st.used_bytes += tile.byte_len();
         if let Some(old) = st.tiles.put(key, tile) {
             st.used_bytes -= old.byte_len();
@@ -92,18 +96,21 @@ impl TileCache {
         let (inner, source, key) = (self.inner.clone(), source.clone(), key.clone());
         self.pool.spawn(move || {
             let result = source.read_tile(key.level, key.tx, key.ty);
-            match result {
-                Ok(tile) => inner.insert(key.clone(), Arc::new(tile)),
-                Err(e) => {
-                    let mut st = inner.state.lock().unwrap();
-                    // ponytail: wholesale clear when full; an LRU would keep recent failures.
-                    if st.failures.len() >= MAX_FAILURES {
-                        st.failures.clear();
+            let mut st = inner.state.lock().unwrap();
+            // Evicted while loading: the result belongs to a gone band, drop it.
+            if st.pending.remove(&key) {
+                match result {
+                    Ok(tile) => inner.insert_locked(&mut st, key.clone(), Arc::new(tile)),
+                    Err(e) => {
+                        // ponytail: wholesale clear when full; an LRU would keep recent failures.
+                        if st.failures.len() >= MAX_FAILURES {
+                            st.failures.clear();
+                        }
+                        st.failures.insert(key.clone(), e.to_string());
                     }
-                    st.failures.insert(key.clone(), e.to_string());
                 }
             }
-            inner.state.lock().unwrap().pending.remove(&key);
+            drop(st);
             let _ = inner.tx.send(key);
         });
         TileState::Pending
@@ -149,6 +156,7 @@ impl TileCache {
             }
         }
         st.failures.retain(|k, _| !doomed(k));
+        st.pending.retain(|k| !doomed(k));
     }
 
     pub fn used_bytes(&self) -> usize {
@@ -176,6 +184,34 @@ mod tests {
 
     fn mem(w: usize, h: usize) -> Arc<dyn RasterSource> {
         Arc::new(MemorySource::new(Array2::zeros((h, w))))
+    }
+
+    #[test]
+    fn evict_band_drops_only_that_band() {
+        let (cache, rx) = TileCache::new(1 << 30);
+        let src = mem(8, 8);
+        let other = TileKey {
+            band: "c".into(),
+            ..key(0)
+        };
+        for k in [key(0), other.clone()] {
+            cache.get(&k, &src);
+            rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        let bytes = cache.peek(&key(0)).unwrap().byte_len();
+        let before = cache.used_bytes();
+        cache
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .failures
+            .insert(key(1), "x".into());
+        cache.evict_band(ProductId(1), "b");
+        assert!(cache.peek(&key(0)).is_none());
+        assert!(cache.peek(&other).is_some());
+        assert_eq!(cache.used_bytes(), before - bytes);
+        assert!(cache.inner.state.lock().unwrap().failures.is_empty());
     }
 
     #[test]

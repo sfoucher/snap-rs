@@ -18,22 +18,44 @@ pub fn mask_manager_ui(ui: &mut egui::Ui, state: &mut AppState) {
             ui.strong(h);
         }
         ui.end_row();
-        let mut p = prod.write().unwrap();
-        for m in &mut p.masks {
-            let mut vis = state.mask_visible(pid, &m.name);
+        // Edit copies under a read lock; write back only when a widget changed.
+        let masks: Vec<_> = prod
+            .read()
+            .unwrap()
+            .masks
+            .iter()
+            .map(|m| (m.name.clone(), m.expr.clone(), m.color, m.opacity))
+            .collect();
+        for (name, expr, mut color, mut opacity) in masks {
+            let m = (&name, &expr);
+            let mut vis = state.mask_visible(pid, m.0);
             if ui.checkbox(&mut vis, "").changed() {
-                state.set_mask_visible(pid, &m.name, vis);
+                state.set_mask_visible(pid, m.0, vis);
             }
-            ui.color_edit_button_srgba_unmultiplied(&mut m.color);
-            ui.add(egui::Slider::new(&mut m.opacity, 0.0..=1.0));
-            let node = NodeRef::Mask(pid, m.name.clone());
+            let c = ui
+                .color_edit_button_srgba_unmultiplied(&mut color)
+                .changed();
+            let o = ui.add(egui::Slider::new(&mut opacity, 0.0..=1.0)).changed();
+            if c || o {
+                if let Some(mm) = prod
+                    .write()
+                    .unwrap()
+                    .masks
+                    .iter_mut()
+                    .find(|x| x.name == name)
+                {
+                    mm.color = color;
+                    mm.opacity = opacity;
+                }
+            }
+            let node = NodeRef::Mask(pid, name.clone());
             if ui
-                .selectable_label(state.selected.as_ref() == Some(&node), &m.name)
+                .selectable_label(state.selected.as_ref() == Some(&node), &name)
                 .clicked()
             {
                 state.selected = Some(node);
             }
-            ui.label(&m.expr);
+            ui.label(&expr);
             ui.end_row();
         }
     });
