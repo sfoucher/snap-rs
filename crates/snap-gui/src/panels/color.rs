@@ -33,8 +33,13 @@ fn histogram(ui: &mut egui::Ui, id: egui::Id, stats: &BandStats, s: &mut Stretch
         .iter()
         .enumerate()
         .map(|(i, &c)| {
-            Bar::new(stats.min + (i as f64 + 0.5) * stats.bin_width, c as f64)
-                .width(stats.bin_width)
+            // a constant band has all samples in bin 0: centre it on the value
+            let x = if stats.min == stats.max {
+                stats.min
+            } else {
+                stats.min + (i as f64 + 0.5) * stats.bin_width
+            };
+            Bar::new(x, c as f64).width(stats.bin_width)
         })
         .collect();
     let grab = id.with("grab");
@@ -74,6 +79,7 @@ fn channel_ui(
     ui: &mut egui::Ui,
     id: egui::Id,
     stats: Option<&BandStats>,
+    failed: bool,
     dt_stretch: &Stretch,
     s: &mut Stretch,
 ) {
@@ -81,6 +87,9 @@ fn channel_ui(
         Some(st) if st.sample_count > 0 => histogram(ui, id, st, s),
         Some(_) => {
             ui.label("no valid samples");
+        }
+        None if failed => {
+            ui.label("statistics unavailable");
         }
         None => {
             ui.label("computing…");
@@ -154,6 +163,8 @@ pub fn color_panel_ui(ui: &mut egui::Ui, state: &mut AppState) {
         ui.checkbox(&mut sync, "Sync RGB sliders");
         ui.data_mut(|d| d.insert_temp(sync_id, sync));
     }
+    let pid = state.views[vi].product;
+    let failed: Vec<bool> = names.iter().map(|n| state.stats_failed(pid, n)).collect();
     let mut errors = Vec::new();
     let view = &mut state.views[vi];
     for (ch, name) in names.iter().enumerate() {
@@ -171,6 +182,7 @@ pub fn color_panel_ui(ui: &mut egui::Ui, state: &mut AppState) {
             ui,
             egui::Id::new(("color_hist", vi, ch)),
             stats.as_ref(),
+            failed[ch],
             &dt,
             &mut s,
         );

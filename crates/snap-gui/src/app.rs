@@ -2,7 +2,9 @@ use crate::explorer::{explorer_ui, ExplorerAction};
 use crate::panels::color::{color_panel_ui, default_stretch};
 use crate::view::{canvas_ui, GpuState, Stretch, ViewSources, ViewState};
 use egui_dock::{DockArea, DockState, NodeIndex};
-use snap_core::{compute_stats_coarsest, Product, ProductId, TileCache, TileKey};
+use snap_core::{
+    compute_stats_coarsest, BandStats, DataType, Product, ProductId, TileCache, TileKey,
+};
 use snap_io::{IoError, Registry};
 use std::collections::HashSet;
 use std::path::Path;
@@ -24,8 +26,28 @@ pub struct AppState {
     pub errors: Vec<String>,
     /// Bands whose background statistics job has been started (never retried).
     stats_started: HashSet<(ProductId, String)>,
-    stats_err_tx: Sender<String>,
-    stats_err_rx: Receiver<String>,
+    stats_failed: HashSet<(ProductId, String)>,
+    stats_tx: Sender<StatsDone>,
+    stats_rx: Receiver<StatsDone>,
+}
+
+type StatsDone = (ProductId, String, Result<(), String>);
+
+/// Sets the default stretch on each channel of `view` showing `band` that is still on
+/// the data-type range. Called only when statistics arrive or a view opens.
+fn apply_default_stretch(view: &mut ViewState, band: &str, dt: DataType, stats: &BandStats) {
+    if stats.sample_count == 0 {
+        return;
+    }
+    let names = match &view.sources {
+        ViewSources::Single(n) => vec![n.clone()],
+        ViewSources::Rgb(n) => n.to_vec(),
+    };
+    for (ch, n) in names.iter().enumerate() {
+        if n == band && view.stretch[ch] == Stretch::for_type(dt) {
+            view.stretch[ch] = default_stretch(stats);
+        }
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -56,7 +78,7 @@ impl AppState {
         sys.refresh_memory();
         let budget = (sys.total_memory() / 4).max(MIN_CACHE) as usize;
         let (cache, cache_rx) = TileCache::new(budget);
-        let (stats_err_tx, stats_err_rx) = channel();
+        let (stats_tx, stats_rx) = channel();
         Self {
             registry,
             cache,
@@ -67,53 +89,82 @@ impl AppState {
             active_view: None,
             errors: Vec::new(),
             stats_started: HashSet::new(),
-            stats_err_tx,
-            stats_err_rx,
+            stats_failed: HashSet::new(),
+            stats_tx,
+            stats_rx,
         }
     }
 
     /// Starts missing band statistics on background threads (no product lock is held
-    /// while computing) and applies the default stretch to channels still on the
-    /// data-type range once their statistics exist.
+    /// while computing) and handles finished ones: the default stretch is applied once,
+    /// when a band's statistics arrive, and failures are recorded (never retried).
     pub fn drive_stats(&mut self, ctx: &egui::Context) {
-        self.errors.extend(self.stats_err_rx.try_iter());
-        for vi in 0..self.views.len() {
-            let pid = self.views[vi].product;
-            let names: Vec<String> = match &self.views[vi].sources {
-                ViewSources::Single(n) => vec![n.clone()],
-                ViewSources::Rgb(n) => n.to_vec(),
-            };
-            let Some(prod) = self.product(pid).cloned() else {
-                continue;
-            };
-            for (ch, name) in names.iter().enumerate() {
-                let p = prod.read().unwrap();
-                let Some(b) = p.band(name) else { continue };
-                if let Some(st) = b.stats.get() {
-                    let view = &mut self.views[vi];
-                    if st.sample_count > 0 && view.stretch[ch] == Stretch::for_type(b.data_type) {
-                        view.stretch[ch] = default_stretch(st);
-                    }
-                } else if self.stats_started.insert((pid, name.clone())) {
-                    let (src, nd) = (b.source.clone(), b.no_data);
-                    let (prod, name) = (prod.clone(), name.clone());
-                    let (ctx, tx) = (ctx.clone(), self.stats_err_tx.clone());
-                    std::thread::spawn(move || {
-                        match compute_stats_coarsest(&src, nd) {
-                            Ok(st) => {
-                                if let Some(b) = prod.read().unwrap().band(&name) {
-                                    let _ = b.stats.set(st);
-                                }
-                            }
-                            Err(e) => {
-                                let _ = tx.send(format!("statistics for {name}: {e}"));
-                            }
-                        }
-                        ctx.request_repaint();
-                    });
+        for (pid, name, res) in self.stats_rx.try_iter().collect::<Vec<_>>() {
+            match res {
+                Ok(()) => self.apply_default(pid, &name),
+                Err(e) => {
+                    self.errors.push(format!("statistics for {name}: {e}"));
+                    self.stats_failed.insert((pid, name));
                 }
             }
         }
+        let mut wanted = Vec::new();
+        for v in &self.views {
+            let names = match &v.sources {
+                ViewSources::Single(n) => vec![n.clone()],
+                ViewSources::Rgb(n) => n.to_vec(),
+            };
+            wanted.extend(names.into_iter().map(|n| (v.product, n)));
+        }
+        for (pid, name) in wanted {
+            if self.stats_started.contains(&(pid, name.clone())) {
+                continue;
+            }
+            let Some(prod) = self.product(pid).cloned() else {
+                continue;
+            };
+            let job = prod
+                .read()
+                .unwrap()
+                .band(&name)
+                .filter(|b| b.stats.get().is_none())
+                .map(|b| (b.source.clone(), b.no_data));
+            let Some((src, nd)) = job else { continue };
+            self.stats_started.insert((pid, name.clone()));
+            let (ctx, tx) = (ctx.clone(), self.stats_tx.clone());
+            std::thread::spawn(move || {
+                let res = compute_stats_coarsest(&src, nd)
+                    .map_err(|e| e.to_string())
+                    .map(|st| {
+                        if let Some(b) = prod.read().unwrap().band(&name) {
+                            let _ = b.stats.set(st);
+                        }
+                    });
+                let _ = tx.send((pid, name, res));
+                ctx.request_repaint();
+            });
+        }
+    }
+
+    /// Applies the default stretch to `band`'s views if its statistics exist.
+    pub fn apply_default(&mut self, pid: ProductId, band: &str) {
+        let Some(prod) = self.product(pid).cloned() else {
+            return;
+        };
+        let found = prod
+            .read()
+            .unwrap()
+            .band(band)
+            .and_then(|b| b.stats.get().cloned().map(|st| (b.data_type, st)));
+        if let Some((dt, st)) = found {
+            for v in self.views.iter_mut().filter(|v| v.product == pid) {
+                apply_default_stretch(v, band, dt, &st);
+            }
+        }
+    }
+
+    pub fn stats_failed(&self, pid: ProductId, band: &str) -> bool {
+        self.stats_failed.contains(&(pid, band.to_string()))
     }
 
     pub fn open_path(&mut self, path: &Path) -> Result<ProductId, IoError> {
@@ -297,6 +348,7 @@ impl SnapApp {
                     return;
                 };
                 self.state.views.push(view);
+                self.state.apply_default(product, &band);
                 let idx = self.state.views.len() - 1;
                 self.state.active_view = Some(idx);
                 self.dock.push_to_focused_leaf(Pane::Image(idx));
@@ -496,6 +548,38 @@ mod tests {
             view_remap(&views, ProductId(1)),
             vec![None, Some(0), None, Some(1)]
         );
+    }
+
+    #[test]
+    fn default_stretch_applied_only_to_untouched_channels() {
+        let stats = |n| BandStats {
+            min: 0.0,
+            max: 100.0,
+            mean: 50.0,
+            histogram: vec![n; 512],
+            bin_width: 100.0 / 512.0,
+            sample_count: n as u64 * 512,
+            level: 0,
+        };
+        let mut v = ViewState::single(ProductId(1), "b", DataType::U8, (1, 1), "t".into());
+        let user = Stretch {
+            min: 5.0,
+            max: 9.0,
+            gamma: 2.0,
+        };
+        // empty stats: untouched
+        apply_default_stretch(&mut v, "b", DataType::U8, &stats(0));
+        assert_eq!(v.stretch[0], Stretch::for_type(DataType::U8));
+        // other band: untouched
+        apply_default_stretch(&mut v, "x", DataType::U8, &stats(4));
+        assert_eq!(v.stretch[0], Stretch::for_type(DataType::U8));
+        // arrival: applied
+        apply_default_stretch(&mut v, "b", DataType::U8, &stats(4));
+        assert!((v.stretch[0].max - 98.0).abs() < 1.0, "{:?}", v.stretch[0]);
+        // user-changed channel: untouched
+        v.stretch[0] = user.clone();
+        apply_default_stretch(&mut v, "b", DataType::U8, &stats(4));
+        assert_eq!(v.stretch[0], user);
     }
 
     #[test]
