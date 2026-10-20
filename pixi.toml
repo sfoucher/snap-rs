@@ -1,0 +1,38 @@
+[workspace]
+name = "snap-rs"
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
+
+[dependencies]
+# gdal 0.17 / gdal-sys 0.10 ship prebuilt bindings (verified against 3.9); cap
+# below the first release we have not tried. Raise when gdal-sys is bumped.
+gdal = ">=3.8,<3.10"
+libgdal = ">=3.8,<3.10"
+proj = ">=9.4"
+rust = ">=1.80"
+pkg-config = "*"
+# proj-sys runs bindgen at build time
+clang = "*"
+libclang = "*"
+cmake = "*"
+c-compiler = "*"
+cxx-compiler = "*"
+
+[tasks]
+test = "cargo test --workspace"
+run = "cargo run -p snap-gui"
+check = "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
+
+[activation.env]
+GDAL_DATA = "$CONDA_PREFIX/share/gdal"
+PROJ_DATA = "$CONDA_PREFIX/share/proj"
+
+[target.linux-64.activation.env]
+LD_LIBRARY_PATH = "$CONDA_PREFIX/lib"
+
+# Windows values are unverified (no Windows machine); see README/CI notes.
+[target.win-64.activation.env]
+GDAL_DATA = "%CONDA_PREFIX%\\Library\\share\\gdal"
+PROJ_DATA = "%CONDA_PREFIX%\\Library\\share\\proj"
+GDAL_HOME = "%CONDA_PREFIX%\\Library"
+PKG_CONFIG_PATH = "%CONDA_PREFIX%\\Library\\lib\\pkgconfig"
