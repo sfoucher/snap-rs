@@ -8,3 +8,4 @@ ndarray.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
 proj.workspace = true
+sha2.workspace = true
