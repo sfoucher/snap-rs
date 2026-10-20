@@ -6,3 +6,5 @@ edition.workspace = true
 [dependencies]
 chumsky.workspace = true
 thiserror.workspace = true
+snap-core = { path = "../snap-core" }
+ndarray.workspace = true
