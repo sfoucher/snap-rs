@@ -99,6 +99,7 @@ pub fn canvas_ui(ui: &mut egui::Ui, state: &mut AppState, view_idx: usize) -> Ca
     let nch = chans.len();
 
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+    state.canvas_rects.insert(view_idx, rect);
     let view = &mut state.views[view_idx];
     handle_input(ui, &resp, view, w, h);
     event.hover_pixel = resp.hover_pos().map(|p| to_image(view, rect, p));

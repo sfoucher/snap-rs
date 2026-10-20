@@ -1,8 +1,10 @@
 use crate::dialogs::band_maths::{apply_band_maths, band_maths_dialog, preset_as_mask};
+use crate::dialogs::export::{export_dialog, run_export};
 use crate::dialogs::rgb::rgb_dialog;
 use crate::explorer::{explorer_ui, ExplorerAction};
 use crate::panels::color::{color_panel_ui, default_stretch};
 use crate::panels::mask_manager::mask_manager_ui;
+use crate::panels::metadata::metadata_ui;
 use crate::panels::pixel_info::{pixel_info_at, pixel_info_ui};
 use crate::view::{canvas_ui, GpuState, Stretch, ViewSources, ViewState};
 use egui_dock::{DockArea, DockState, NodeIndex};
@@ -10,8 +12,8 @@ use snap_core::{
     compute_stats_coarsest, BandStats, DataType, Product, ProductId, TileCache, TileKey,
 };
 use snap_io::{IoError, Registry};
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -39,6 +41,8 @@ pub struct AppState {
     removed_masks: Vec<(ProductId, String)>,
     /// Set by the mask manager's "Add…"; the app opens the band-maths dialog for it.
     pub(crate) add_mask_for: Option<ProductId>,
+    /// Screen rect each view's canvas had on its last draw (for "export current view").
+    pub(crate) canvas_rects: HashMap<usize, egui::Rect>,
 }
 
 type StatsDone = (ProductId, String, Result<(), String>);
@@ -105,6 +109,7 @@ impl AppState {
             mask_hidden: HashSet::new(),
             removed_masks: Vec::new(),
             add_mask_for: None,
+            canvas_rects: HashMap::new(),
         }
     }
 
@@ -265,6 +270,7 @@ impl AppState {
             .active_view
             .and_then(|i| remap.get(i).copied().flatten());
         self.views.retain(|v| v.product != id);
+        self.canvas_rects.clear(); // view indices shift; canvases rewrite theirs next frame
         self.stats_started.retain(|(p, _)| *p != id);
         self.stats_failed.retain(|(p, _)| *p != id);
         self.mask_hidden.retain(|(p, _)| *p != id);
@@ -318,6 +324,10 @@ pub struct SnapApp {
     show_about: bool,
     rgb_dialog: Option<ProductId>,
     band_maths: Option<ProductId>,
+    export: Option<ProductId>,
+    /// Running exports and their target paths; polled every frame.
+    exports: Vec<(std::thread::JoinHandle<Result<(), IoError>>, PathBuf)>,
+    metadata_filter: String,
     render_state: Option<eframe::egui_wgpu::RenderState>,
     /// Latest canvas hover (view index, level-0 pixel); one frame behind the panel.
     hover: Option<(usize, (f64, f64))>,
@@ -325,6 +335,7 @@ pub struct SnapApp {
 
 struct Viewer<'a> {
     state: &'a mut AppState,
+    metadata_filter: &'a mut String,
     hover: Option<(usize, (f64, f64))>,
     next_hover: Option<(usize, (f64, f64))>,
     actions: Vec<ExplorerAction>,
@@ -367,7 +378,22 @@ impl egui_dock::TabViewer for Viewer<'_> {
             }
             Pane::Color => color_panel_ui(ui, self.state),
             Pane::Masks => mask_manager_ui(ui, self.state),
-            _ => {}
+            Pane::Metadata => {
+                let pid = match &self.state.selected {
+                    Some(sel) => Some(sel.product()),
+                    None => self
+                        .state
+                        .active_view
+                        .and_then(|i| self.state.views.get(i))
+                        .map(|v| v.product),
+                };
+                match pid.and_then(|p| self.state.product(p)) {
+                    Some(p) => metadata_ui(ui, &p.read().unwrap().metadata, self.metadata_filter),
+                    None => {
+                        ui.label("Select a product to see its metadata.");
+                    }
+                }
+            }
         }
     }
 
@@ -400,6 +426,9 @@ impl SnapApp {
             show_about: false,
             rgb_dialog: None,
             band_maths: None,
+            export: None,
+            exports: Vec::new(),
+            metadata_filter: String::new(),
             render_state,
             hover: None,
         }
@@ -440,6 +469,7 @@ impl SnapApp {
             }
             ExplorerAction::OpenRgb(product) => self.rgb_dialog = Some(product),
             ExplorerAction::BandMaths(product) => self.band_maths = Some(product),
+            ExplorerAction::Export(product) => self.export = Some(product),
             ExplorerAction::Remove(NodeRef::Product(id)) => self.close_product(id),
             _ => {}
         }
@@ -512,6 +542,25 @@ impl SnapApp {
         actions
     }
 
+    /// Reports finished exports as toasts; keeps the frame loop alive while any run.
+    fn poll_exports(&mut self, ctx: &egui::Context) {
+        let (done, running): (Vec<_>, Vec<_>) = std::mem::take(&mut self.exports)
+            .into_iter()
+            .partition(|(h, _)| h.is_finished());
+        self.exports = running;
+        for (h, path) in done {
+            let msg = match h.join() {
+                Ok(Ok(())) => format!("Exported to {}", path.display()),
+                Ok(Err(e)) => format!("Export failed: {e}"),
+                Err(_) => "Export failed: worker panicked".into(),
+            };
+            self.state.errors.push(msg);
+        }
+        if !self.exports.is_empty() {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+    }
+
     fn show_toasts(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
         self.toasts
@@ -549,6 +598,7 @@ impl eframe::App for SnapApp {
         let mut actions = self.menu(ctx);
         let mut viewer = Viewer {
             state: &mut self.state,
+            metadata_filter: &mut self.metadata_filter,
             hover: self.hover,
             next_hover: None,
             actions: Vec::new(),
@@ -597,6 +647,17 @@ impl eframe::App for SnapApp {
                 self.band_maths = None;
             }
         }
+        if let Some(pid) = self.export {
+            let mut open = self.state.product(pid).is_some();
+            if let Some(req) = export_dialog(ctx, &mut self.state, pid, &mut open) {
+                let path = req.path.clone();
+                self.exports.push((run_export(&self.state, req), path));
+            }
+            if !open {
+                self.export = None;
+            }
+        }
+        self.poll_exports(ctx);
         if !self.state.removed_masks.is_empty() {
             let gone = std::mem::take(&mut self.state.removed_masks);
             if let Some(rs) = &self.render_state {

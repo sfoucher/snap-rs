@@ -10,6 +10,7 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Debug, Copy, Clone, Eq, Hash, PartialEq)]
 pub struct ProductId(pub u64);
 
+#[derive(Clone)]
 pub struct Band {
     pub name: String,
     pub data_type: DataType,
@@ -24,6 +25,7 @@ pub struct Band {
     pub stats: OnceLock<BandStats>,
 }
 
+#[derive(Clone)]
 pub struct Mask {
     pub name: String,
     pub expr: String,
@@ -32,6 +34,7 @@ pub struct Mask {
     pub source: Arc<dyn RasterSource>,
 }
 
+#[derive(Clone)]
 pub struct Product {
     pub id: ProductId,
     pub name: String,
