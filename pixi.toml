@@ -14,7 +14,6 @@ pkg-config = "*"
 # proj-sys runs bindgen at build time
 clang = "*"
 libclang = "*"
-cmake = "*"
 c-compiler = "*"
 cxx-compiler = "*"
 
@@ -30,9 +29,17 @@ PROJ_DATA = "$CONDA_PREFIX/share/proj"
 [target.linux-64.activation.env]
 LD_LIBRARY_PATH = "$CONDA_PREFIX/lib"
 
-# Windows values are unverified (no Windows machine); see README/CI notes.
+# Windows values are unverified (no Windows machine). GDAL_HOME is deliberately unset:
+# gdal-sys only accepts lib\gdal_i.lib there and conda ships lib\gdal.lib, so it
+# falls through to pkg-config via PKG_CONFIG_PATH (gdal-sys 0.10 build.rs does this when
+# GDAL_HOME/GDAL_LIB_DIR are unset). Library\bin is put on PATH by pixi activation.
 [target.win-64.activation.env]
 GDAL_DATA = "%CONDA_PREFIX%\\Library\\share\\gdal"
 PROJ_DATA = "%CONDA_PREFIX%\\Library\\share\\proj"
-GDAL_HOME = "%CONDA_PREFIX%\\Library"
 PKG_CONFIG_PATH = "%CONDA_PREFIX%\\Library\\lib\\pkgconfig"
+
+[target.osx-64.activation.env]
+DYLD_FALLBACK_LIBRARY_PATH = "$CONDA_PREFIX/lib"
+
+[target.osx-arm64.activation.env]
+DYLD_FALLBACK_LIBRARY_PATH = "$CONDA_PREFIX/lib"

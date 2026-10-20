@@ -12,8 +12,11 @@ GDAL and PROJ come from a [pixi](https://pixi.sh) (conda-forge) environment:
 ```sh
 pixi install
 pixi run test                       # cargo test --workspace
-pixi run run -- path/to/image.tif   # opens the viewer on one or more files
+pixi run run                        # starts the viewer
+pixi run cargo run -p snap-gui -- path/to/image.tif   # opens one or more files
 ```
+
+CI covers Linux (apt GDAL) and Windows (pixi); macOS is untested for now.
 
 Without pixi, install GDAL (3.8-3.9 tested) and PROJ (>= 9.2) with pkg-config, then `cargo run -p snap-gui -- image.tif`. `cargo install` works the same way once those libraries are present.
 
