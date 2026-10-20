@@ -127,19 +127,28 @@ impl TileCache {
     }
 
     pub fn evict_product(&self, id: ProductId) {
+        self.evict_if(|k| k.product == id);
+    }
+
+    /// Drops every cached tile (and recorded failure) of one band or mask.
+    pub fn evict_band(&self, id: ProductId, band: &str) {
+        self.evict_if(|k| k.product == id && k.band == band);
+    }
+
+    fn evict_if(&self, doomed: impl Fn(&TileKey) -> bool) {
         let mut st = self.inner.state.lock().unwrap();
-        let doomed: Vec<TileKey> = st
+        let keys: Vec<TileKey> = st
             .tiles
             .iter()
-            .filter(|(k, _)| k.product == id)
+            .filter(|(k, _)| doomed(k))
             .map(|(k, _)| k.clone())
             .collect();
-        for k in doomed {
+        for k in keys {
             if let Some(t) = st.tiles.pop(&k) {
                 st.used_bytes -= t.byte_len();
             }
         }
-        st.failures.retain(|k, _| k.product != id);
+        st.failures.retain(|k, _| !doomed(k));
     }
 
     pub fn used_bytes(&self) -> usize {

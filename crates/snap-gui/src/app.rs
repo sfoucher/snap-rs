@@ -1,6 +1,8 @@
+use crate::dialogs::band_maths::{apply_band_maths, band_maths_dialog, preset_as_mask};
 use crate::dialogs::rgb::rgb_dialog;
 use crate::explorer::{explorer_ui, ExplorerAction};
 use crate::panels::color::{color_panel_ui, default_stretch};
+use crate::panels::mask_manager::mask_manager_ui;
 use crate::panels::pixel_info::{pixel_info_at, pixel_info_ui};
 use crate::view::{canvas_ui, GpuState, Stretch, ViewSources, ViewState};
 use egui_dock::{DockArea, DockState, NodeIndex};
@@ -31,6 +33,12 @@ pub struct AppState {
     stats_failed: HashSet<(ProductId, String)>,
     stats_tx: Sender<StatsDone>,
     stats_rx: Receiver<StatsDone>,
+    /// Masks switched off in the mask manager; a mask is visible unless listed (R30).
+    mask_hidden: HashSet<(ProductId, String)>,
+    /// Removed masks whose GPU tiles the app still has to drop.
+    removed_masks: Vec<(ProductId, String)>,
+    /// Set by the mask manager's "Add…"; the app opens the band-maths dialog for it.
+    pub(crate) add_mask_for: Option<ProductId>,
 }
 
 type StatsDone = (ProductId, String, Result<(), String>);
@@ -94,6 +102,9 @@ impl AppState {
             stats_failed: HashSet::new(),
             stats_tx,
             stats_rx,
+            mask_hidden: HashSet::new(),
+            removed_masks: Vec::new(),
+            add_mask_for: None,
         }
     }
 
@@ -202,6 +213,32 @@ impl AppState {
         Some(self.views.len() - 1)
     }
 
+    pub fn mask_visible(&self, pid: ProductId, name: &str) -> bool {
+        !self.mask_hidden.contains(&(pid, name.to_string()))
+    }
+
+    pub fn set_mask_visible(&mut self, pid: ProductId, name: &str, visible: bool) {
+        let key = (pid, name.to_string());
+        if visible {
+            self.mask_hidden.remove(&key);
+        } else {
+            self.mask_hidden.insert(key);
+        }
+    }
+
+    /// Removes a mask and its cached tiles (a later mask may reuse the name).
+    pub fn remove_mask(&mut self, pid: ProductId, name: &str) {
+        if let Some(p) = self.product(pid) {
+            p.write().unwrap().masks.retain(|m| m.name != name);
+        }
+        self.cache.evict_band(pid, name);
+        self.set_mask_visible(pid, name, true);
+        self.removed_masks.push((pid, name.to_string()));
+        if self.selected == Some(NodeRef::Mask(pid, name.to_string())) {
+            self.selected = None;
+        }
+    }
+
     pub fn stats_failed(&self, pid: ProductId, band: &str) -> bool {
         self.stats_failed.contains(&(pid, band.to_string()))
     }
@@ -230,6 +267,7 @@ impl AppState {
         self.views.retain(|v| v.product != id);
         self.stats_started.retain(|(p, _)| *p != id);
         self.stats_failed.retain(|(p, _)| *p != id);
+        self.mask_hidden.retain(|(p, _)| *p != id);
         if self.selected.as_ref().is_some_and(|s| s.product() == id) {
             self.selected = None;
         }
@@ -279,6 +317,7 @@ pub struct SnapApp {
     toasts: Vec<(String, Instant)>,
     show_about: bool,
     rgb_dialog: Option<ProductId>,
+    band_maths: Option<ProductId>,
     render_state: Option<eframe::egui_wgpu::RenderState>,
     /// Latest canvas hover (view index, level-0 pixel); one frame behind the panel.
     hover: Option<(usize, (f64, f64))>,
@@ -327,6 +366,7 @@ impl egui_dock::TabViewer for Viewer<'_> {
                 pixel_info_ui(ui, info.as_ref());
             }
             Pane::Color => color_panel_ui(ui, self.state),
+            Pane::Masks => mask_manager_ui(ui, self.state),
             _ => {}
         }
     }
@@ -359,6 +399,7 @@ impl SnapApp {
             toasts: Vec::new(),
             show_about: false,
             rgb_dialog: None,
+            band_maths: None,
             render_state,
             hover: None,
         }
@@ -398,6 +439,7 @@ impl SnapApp {
                 self.dock.push_to_focused_leaf(Pane::Image(idx));
             }
             ExplorerAction::OpenRgb(product) => self.rgb_dialog = Some(product),
+            ExplorerAction::BandMaths(product) => self.band_maths = Some(product),
             ExplorerAction::Remove(NodeRef::Product(id)) => self.close_product(id),
             _ => {}
         }
@@ -538,6 +580,31 @@ impl eframe::App for SnapApp {
             }
             if !open {
                 self.rgb_dialog = None;
+            }
+        }
+        if let Some(pid) = self.state.add_mask_for.take() {
+            preset_as_mask(ctx, &self.state, pid);
+            self.band_maths = Some(pid);
+        }
+        if let Some(pid) = self.band_maths {
+            let mut open = true;
+            if let Some(req) = band_maths_dialog(ctx, &mut self.state, pid, &mut open) {
+                if let Err(e) = apply_band_maths(&mut self.state, &req) {
+                    self.state.errors.push(format!("band maths: {e}"));
+                }
+            }
+            if !open {
+                self.band_maths = None;
+            }
+        }
+        if !self.state.removed_masks.is_empty() {
+            let gone = std::mem::take(&mut self.state.removed_masks);
+            if let Some(rs) = &self.render_state {
+                if let Some(gpu) = rs.renderer.write().callback_resources.get_mut::<GpuState>() {
+                    for (pid, name) in gone {
+                        gpu.evict_band(pid, &name);
+                    }
+                }
             }
         }
         if self.show_about {

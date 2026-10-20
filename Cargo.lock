@@ -3666,6 +3666,7 @@ dependencies = [
  "ndarray",
  "rfd",
  "snap-core",
+ "snap-expr",
  "snap-io",
  "snap-io-gdal",
  "sysinfo",

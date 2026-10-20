@@ -125,7 +125,6 @@ impl GpuState {
 
     /// Uploads `tile` as an R32Float texture of its exact (clipped) shape unless already resident.
     pub fn upload(&mut self, key: &TileKey, tile: &Tile, no_data: Option<f32>) -> &TileTexture {
-        let frame = self.frame;
         if !self.textures.contains_key(key) {
             let data = tile.to_f32();
             let (rows, cols) = data.dim();
@@ -138,20 +137,58 @@ impl GpuState {
                 height: rows as u32,
                 depth_or_array_layers: 1,
             };
-            let texture = self.texture(size, wgpu::TextureFormat::R32Float, &bytes);
-            let view = texture.create_view(&Default::default());
-            self.textures.insert(
-                key.clone(),
-                TileTexture {
-                    _texture: texture,
-                    view,
-                    last_used: frame,
-                },
-            );
+            self.insert(key, size, wgpu::TextureFormat::R32Float, &bytes);
         }
+        self.touch(key)
+    }
+
+    /// Uploads a mask tile as R8Unorm (255 where the pixel is set) unless already resident.
+    pub fn upload_mask(&mut self, key: &TileKey, tile: &Tile) -> &TileTexture {
+        if !self.textures.contains_key(key) {
+            let data = tile.to_f32();
+            let (rows, cols) = data.dim();
+            let bytes: Vec<u8> = data
+                .iter()
+                .map(|&v| if v > 0.5 { 255 } else { 0 })
+                .collect();
+            let size = wgpu::Extent3d {
+                width: cols as u32,
+                height: rows as u32,
+                depth_or_array_layers: 1,
+            };
+            self.insert(key, size, wgpu::TextureFormat::R8Unorm, &bytes);
+        }
+        self.touch(key)
+    }
+
+    fn insert(
+        &mut self,
+        key: &TileKey,
+        size: wgpu::Extent3d,
+        format: wgpu::TextureFormat,
+        bytes: &[u8],
+    ) {
+        let texture = self.texture(size, format, bytes);
+        let view = texture.create_view(&Default::default());
+        self.textures.insert(
+            key.clone(),
+            TileTexture {
+                _texture: texture,
+                view,
+                last_used: self.frame,
+            },
+        );
+    }
+
+    fn touch(&mut self, key: &TileKey) -> &TileTexture {
         let t = self.textures.get_mut(key).unwrap();
-        t.last_used = frame;
+        t.last_used = self.frame;
         t
+    }
+
+    pub fn evict_band(&mut self, id: ProductId, band: &str) {
+        self.textures
+            .retain(|k, _| !(k.product == id && k.band == band));
     }
 
     pub fn evict_product(&mut self, id: ProductId) {
@@ -184,7 +221,7 @@ impl GpuState {
             bytes,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * size.width),
+                bytes_per_row: Some(texture.format().block_copy_size(None).unwrap() * size.width),
                 rows_per_image: Some(size.height),
             },
             size,
@@ -217,7 +254,7 @@ impl GpuState {
         if stale {
             let uniforms = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("canvas uniforms"),
-                size: 48,
+                size: 64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
@@ -279,6 +316,8 @@ pub struct CanvasCallback {
     pub frame: u64,
     pub stretch: [Stretch; 3],
     pub mode: u32,
+    /// Mode 2: overlay colour (rgb) and opacity (a).
+    pub color: [f32; 4],
     pub lut: [[u8; 4]; 256],
     pub draws: Vec<TileDraw>,
 }
@@ -298,7 +337,11 @@ impl CallbackTrait for CanvasCallback {
         gpu.frame = self.frame;
         for d in &self.draws {
             for c in 0..3 {
-                gpu.upload(&d.keys[c], &d.tiles[c], d.no_data[c]);
+                if self.mode == 2 {
+                    gpu.upload_mask(&d.keys[c], &d.tiles[c]);
+                } else {
+                    gpu.upload(&d.keys[c], &d.tiles[c], d.no_data[c]);
+                }
             }
         }
         gpu.evict_lru();
@@ -337,6 +380,7 @@ impl CallbackTrait for CanvasCallback {
             st[2].gamma,
         ]);
         uniforms.extend(self.mode.to_ne_bytes());
+        uniforms.extend(f32_bytes(self.color));
         let lut: Vec<u8> = self.lut.concat();
         let lut_size = wgpu::Extent3d {
             width: 256,

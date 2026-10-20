@@ -2,7 +2,8 @@ struct Params {
     min: vec3<f32>,
     max: vec3<f32>,
     gamma: vec3<f32>,
-    mode: u32, // 0 = single band through the LUT, 1 = RGB
+    mode: u32, // 0 = single band through the LUT, 1 = RGB, 2 = mask overlay
+    color: vec4<f32>, // mode 2: rgb colour, a = opacity
 };
 
 @group(0) @binding(0) var<uniform> p: Params;
@@ -47,6 +48,10 @@ fn chan(x: f32, i: u32) -> f32 {
 @fragment
 fn fs(in: VOut) -> @location(0) vec4<f32> {
     let r = texel(t0, in.uv);
+    if p.mode == 2u {
+        // Premultiplied; mask tiles are R8Unorm, so a set pixel reads 1.0.
+        return select(vec4<f32>(0.0), vec4<f32>(p.color.rgb * p.color.a, p.color.a), r > 0.5);
+    }
     if p.mode == 0u {
         if is_nan(r) {
             return vec4<f32>(0.0);

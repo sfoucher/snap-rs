@@ -87,7 +87,6 @@ pub struct ViewState {
     pub zoom: f64,
     /// Level-0 pixel at the canvas centre.
     pub center: (f64, f64),
-    #[allow(dead_code)] // read by the mask overlay task
     pub show_masks: bool,
     pub title: String,
 }

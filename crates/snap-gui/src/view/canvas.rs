@@ -3,7 +3,8 @@ use super::{level_for_zoom, visible_tiles, ViewSources, ViewState};
 use crate::app::AppState;
 use eframe::egui_wgpu;
 use egui::{pos2, Color32, Key, Modifiers, Pos2, Rect as ERect, Sense, Stroke};
-use snap_core::{TileKey, TileState, TILE};
+use snap_core::{RasterSource, TileKey, TileState, TILE};
+use std::sync::Arc;
 
 const ZOOM_STEP: f64 = 1.25;
 const HATCH_SPACING: f32 = 8.0;
@@ -72,8 +73,19 @@ pub fn canvas_ui(ui: &mut egui::Ui, state: &mut AppState, view_idx: usize) -> Ca
     };
     // (source, no_data) per channel; w/h and the pyramid depth come from the first band
     // (ponytail: RGB bands are assumed to share one grid).
-    let (w, h, chans) = {
+    let (w, h, chans, masks) = {
         let p = product.read().unwrap();
+        // Visible masks as (name, source, colour, opacity); read each frame so colour
+        // and opacity edits only change a uniform.
+        let masks: Vec<(String, Arc<dyn RasterSource>, [f32; 4])> = p
+            .masks
+            .iter()
+            .filter(|m| view.show_masks && state.mask_visible(view.product, &m.name))
+            .map(|m| {
+                let [r, g, b, _] = m.color.map(|c| c as f32 / 255.0);
+                (m.name.clone(), m.source.clone(), [r, g, b, m.opacity])
+            })
+            .collect();
         let mut chans = Vec::new();
         for n in &names {
             let Some(b) = p.band(n) else {
@@ -82,7 +94,7 @@ pub fn canvas_ui(ui: &mut egui::Ui, state: &mut AppState, view_idx: usize) -> Ca
             chans.push((b.source.clone(), b.no_data.map(|v| v as f32)));
         }
         let b = p.band(&names[0]).unwrap();
-        (b.width, b.height, chans)
+        (b.width, b.height, chans, masks)
     };
     let nch = chans.len();
 
@@ -172,6 +184,34 @@ pub fn canvas_ui(ui: &mut egui::Ui, state: &mut AppState, view_idx: usize) -> Ca
         }
     }
 
+    // Mask overlays: ready tiles at the image's level only (no coarser fallback).
+    let mut overlays = Vec::new();
+    for (i, (name, src, color)) in masks.iter().enumerate() {
+        if src.levels() <= level {
+            continue;
+        }
+        let mut draws = Vec::new();
+        for (tx, ty, r) in visible_tiles(view, rect, w, h, level) {
+            let key = TileKey {
+                product: view.product,
+                band: name.clone(),
+                level,
+                tx,
+                ty,
+            };
+            if let TileState::Ready(t) = state.cache.get(&key, src) {
+                draws.push(TileDraw {
+                    keys: std::array::from_fn(|_| key.clone()),
+                    tiles: std::array::from_fn(|_| t.clone()),
+                    no_data: [None; 3],
+                    screen: ERect::from_min_max(screen(r.x, r.y), screen(r.x + r.w, r.y + r.h)),
+                    uv: ERect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                });
+            }
+        }
+        overlays.push((i, *color, draws));
+    }
+
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
     let view = &state.views[view_idx];
@@ -182,10 +222,25 @@ pub fn canvas_ui(ui: &mut egui::Ui, state: &mut AppState, view_idx: usize) -> Ca
             frame: ui.ctx().cumulative_pass_nr(),
             stretch: view.stretch.clone(),
             mode,
+            color: [0.0; 4],
             lut: view.palette.to_lut(),
             draws,
         },
     ));
+    for (i, color, draws) in overlays {
+        painter.add(egui_wgpu::Callback::new_paint_callback(
+            rect,
+            CanvasCallback {
+                id: view_idx as u64 | (i as u64 + 1) << 32,
+                frame: ui.ctx().cumulative_pass_nr(),
+                stretch: view.stretch.clone(),
+                mode: 2,
+                color,
+                lut: [[0; 4]; 256],
+                draws,
+            },
+        ));
+    }
     let stroke = Stroke::new(1.0_f32, Color32::from_rgb(200, 60, 60));
     for r in failed {
         let hatch = painter.with_clip_rect(r.intersect(rect));

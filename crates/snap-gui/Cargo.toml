@@ -7,6 +7,7 @@ edition.workspace = true
 snap-core = { path = "../snap-core" }
 snap-io = { path = "../snap-io" }
 snap-io-gdal = { path = "../snap-io-gdal" }
+snap-expr = { path = "../snap-expr" }
 eframe = { workspace = true, features = ["wgpu"] }
 egui.workspace = true
 egui_dock.workspace = true
