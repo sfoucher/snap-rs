@@ -16,7 +16,7 @@ pub struct GdalSource {
     ds: Mutex<Option<Dataset>>,
 }
 
-fn open_err(path: &Path, e: impl std::fmt::Display) -> IoError {
+pub(crate) fn open_err(path: &Path, e: impl std::fmt::Display) -> IoError {
     let mut msg = last_gdal_error();
     if msg.is_empty() {
         msg = e.to_string();
@@ -27,7 +27,7 @@ fn open_err(path: &Path, e: impl std::fmt::Display) -> IoError {
     }
 }
 
-fn map_type(t: GdalDataType) -> Option<DataType> {
+pub(crate) fn map_type(t: GdalDataType) -> Option<DataType> {
     Some(match t {
         GdalDataType::UInt8 => DataType::U8,
         GdalDataType::Int8 => DataType::I8,

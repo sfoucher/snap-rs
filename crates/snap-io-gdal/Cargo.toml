@@ -9,3 +9,4 @@ snap-io = { path = "../snap-io" }
 gdal.workspace = true
 log.workspace = true
 ndarray.workspace = true
+dirs.workspace = true
