@@ -146,21 +146,35 @@ impl AppState {
         }
     }
 
-    /// Applies the default stretch to `band`'s views if its statistics exist.
+    fn band_stats(&self, pid: ProductId, band: &str) -> Option<(DataType, BandStats)> {
+        let p = self.product(pid)?.read().unwrap();
+        let b = p.band(band)?;
+        b.stats.get().cloned().map(|st| (b.data_type, st))
+    }
+
+    /// Applies the default stretch to every view of `band` (its statistics just arrived).
     pub fn apply_default(&mut self, pid: ProductId, band: &str) {
-        let Some(prod) = self.product(pid).cloned() else {
-            return;
-        };
-        let found = prod
-            .read()
-            .unwrap()
-            .band(band)
-            .and_then(|b| b.stats.get().cloned().map(|st| (b.data_type, st)));
-        if let Some((dt, st)) = found {
+        if let Some((dt, st)) = self.band_stats(pid, band) {
             for v in self.views.iter_mut().filter(|v| v.product == pid) {
                 apply_default_stretch(v, band, dt, &st);
             }
         }
+    }
+
+    /// Pushes a single-band view and returns its index; the default stretch is applied
+    /// to this view only, so other views' user stretches are left alone.
+    pub fn open_view(&mut self, pid: ProductId, band: &str) -> Option<usize> {
+        let mut view = {
+            let p = self.product(pid)?.read().unwrap();
+            let b = p.band(band)?;
+            let title = format!("{}: {}", p.name, b.name);
+            ViewState::single(pid, band, b.data_type, (b.width, b.height), title)
+        };
+        if let Some((dt, st)) = self.band_stats(pid, band) {
+            apply_default_stretch(&mut view, band, dt, &st);
+        }
+        self.views.push(view);
+        Some(self.views.len() - 1)
     }
 
     pub fn stats_failed(&self, pid: ProductId, band: &str) -> bool {
@@ -189,6 +203,8 @@ impl AppState {
             .active_view
             .and_then(|i| remap.get(i).copied().flatten());
         self.views.retain(|v| v.product != id);
+        self.stats_started.retain(|(p, _)| *p != id);
+        self.stats_failed.retain(|(p, _)| *p != id);
         if self.selected.as_ref().is_some_and(|s| s.product() == id) {
             self.selected = None;
         }
@@ -333,23 +349,9 @@ impl SnapApp {
     fn handle(&mut self, action: ExplorerAction) {
         match action {
             ExplorerAction::OpenView(product, band) => {
-                let Some(view) = self.state.product(product).and_then(|p| {
-                    let p = p.read().unwrap();
-                    let b = p.band(&band)?;
-                    let title = format!("{}: {}", p.name, b.name);
-                    Some(ViewState::single(
-                        product,
-                        &band,
-                        b.data_type,
-                        (b.width, b.height),
-                        title,
-                    ))
-                }) else {
+                let Some(idx) = self.state.open_view(product, &band) else {
                     return;
                 };
-                self.state.views.push(view);
-                self.state.apply_default(product, &band);
-                let idx = self.state.views.len() - 1;
                 self.state.active_view = Some(idx);
                 self.dock.push_to_focused_leaf(Pane::Image(idx));
             }
@@ -580,6 +582,42 @@ mod tests {
         v.stretch[0] = user.clone();
         apply_default_stretch(&mut v, "b", DataType::U8, &stats(4));
         assert_eq!(v.stretch[0], user);
+    }
+
+    #[test]
+    fn opening_a_view_leaves_other_views_stretch_alone() {
+        snap_io_gdal::init_error_handler();
+        let dir = fixtures::temp_dir("gui-openview");
+        let fx = fixtures::make_fixture(&dir, "a.tif", 8, 8, DataType::U8, 1, false, None, None);
+        let mut st = AppState::new();
+        let id = st.open_path(&fx.path).unwrap();
+        let band = st.product(id).unwrap().read().unwrap().bands[0]
+            .name
+            .clone();
+        let stats = BandStats {
+            min: 0.0,
+            max: 100.0,
+            mean: 50.0,
+            histogram: vec![4; 512],
+            bin_width: 100.0 / 512.0,
+            sample_count: 2048,
+            level: 0,
+        };
+        st.product(id).unwrap().read().unwrap().bands[0]
+            .stats
+            .set(stats)
+            .unwrap();
+        let a = st.open_view(id, &band).unwrap();
+        assert_ne!(st.views[a].stretch[0], Stretch::for_type(DataType::U8));
+        // user presses "Min/Max": back on the U8 range
+        st.views[a].stretch[0] = Stretch::for_type(DataType::U8);
+        st.stats_started.insert((id, band.clone()));
+        let b = st.open_view(id, &band).unwrap();
+        assert_eq!(st.views[a].stretch[0], Stretch::for_type(DataType::U8));
+        assert_ne!(st.views[b].stretch[0], Stretch::for_type(DataType::U8));
+        st.close_product(id);
+        assert!(st.stats_started.is_empty());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
