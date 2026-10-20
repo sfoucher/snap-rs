@@ -868,6 +868,10 @@ version = "0.1.0"
 [[package]]
 name = "snap-io"
 version = "0.1.0"
+dependencies = [
+ "snap-core",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "snap-io-gdal"
