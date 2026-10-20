@@ -8,6 +8,7 @@ mod view;
 use app::SnapApp;
 
 fn main() -> eframe::Result<()> {
+    snap_io_gdal::use_bundled_data();
     env_logger::init();
     snap_io_gdal::init_error_handler();
     let files: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
