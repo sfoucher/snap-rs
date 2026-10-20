@@ -30,9 +30,11 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: prefix-dev/setup-pixi@v0.8.1
+      - uses: prefix-dev/setup-pixi@v0.11.2
         with:
+          pixi-version: v0.82.0
           locked: true
           cache: true
+          activate-environment: true
       - uses: Swatinem/rust-cache@v2
       - run: pixi run check
