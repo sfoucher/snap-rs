@@ -47,8 +47,9 @@ fn attr_row(ui: &mut egui::Ui, a: &MetadataAttribute) {
     }
 }
 
-fn element_ui(ui: &mut egui::Ui, e: &MetadataElement, path: &str) {
-    let path = format!("{path}/{}", e.name);
+fn element_ui(ui: &mut egui::Ui, e: &MetadataElement, path: &str, idx: usize) {
+    // The index keeps same-named siblings' ids apart.
+    let path = format!("{path}/{idx}:{}", e.name);
     egui::CollapsingHeader::new(&e.name)
         .id_salt(&path)
         .show(ui, |ui| {
@@ -72,8 +73,8 @@ fn element_ui(ui: &mut egui::Ui, e: &MetadataElement, path: &str) {
                         }
                     });
             }
-            for c in &e.children {
-                element_ui(ui, c, &path);
+            for (i, c) in e.children.iter().enumerate() {
+                element_ui(ui, c, &path, i);
             }
         });
 }
@@ -84,7 +85,7 @@ pub fn metadata_ui(ui: &mut egui::Ui, root: &MetadataElement, filter: &mut Strin
         ui.text_edit_singleline(filter);
     });
     if filter.is_empty() {
-        element_ui(ui, root, "");
+        element_ui(ui, root, "", 0);
         return;
     }
     let rows = flatten_filtered(root, filter);

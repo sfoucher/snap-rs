@@ -26,6 +26,15 @@ pub fn view_region(view: &ViewState, viewport: egui::Rect, w: u32, h: u32) -> Re
     Rect { x, y, w: rw, h: rh }
 }
 
+/// True when `out` is the product's own file (canonicalised when both exist).
+fn is_source(out: &std::path::Path, source: Option<&std::path::Path>) -> bool {
+    let Some(src) = source else { return false };
+    match (out.canonicalize(), src.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => out == src,
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Region {
     Full,
@@ -41,6 +50,7 @@ struct Form {
     cog: bool,
     compression: Compression,
     path: String,
+    overwrite: bool,
 }
 
 const COMPRESSIONS: [(Compression, &str); 4] = [
@@ -95,6 +105,7 @@ pub fn export_dialog(
         cog: false,
         compression: Compression::Deflate,
         path: default_path(file.as_deref(), &name),
+        overwrite: false,
     });
     if f.region == Region::View && view_rect.is_none() {
         f.region = Region::Full;
@@ -104,8 +115,15 @@ pub fn export_dialog(
         Region::View => view_rect.unwrap_or(Rect { x: 0, y: 0, w, h }),
         Region::Custom => f.custom,
     };
-    let valid =
-        rect.w > 0 && rect.h > 0 && !f.path.trim().is_empty() && f.bands.iter().any(|b| b.1);
+    let out = PathBuf::from(f.path.trim());
+    let is_src = is_source(&out, file.as_deref());
+    let exists = !is_src && out.exists();
+    let valid = rect.w > 0
+        && rect.h > 0
+        && !f.path.trim().is_empty()
+        && f.bands.iter().any(|b| b.1)
+        && !is_src
+        && (!exists || f.overwrite);
     let (mut ok, mut cancel) = (false, false);
     egui::Window::new("Export Subset")
         .collapsible(false)
@@ -164,6 +182,11 @@ pub fn export_dialog(
                     }
                 }
             });
+            if is_src {
+                ui.colored_label(egui::Color32::RED, "cannot overwrite the source file");
+            } else if exists {
+                ui.checkbox(&mut f.overwrite, "Overwrite existing file");
+            }
             ui.horizontal(|ui| {
                 ok = ui.add_enabled(valid, egui::Button::new("OK")).clicked();
                 cancel = ui.button("Cancel").clicked();
@@ -201,6 +224,9 @@ pub fn run_export(
     let cache = state.cache.clone();
     std::thread::spawn(move || {
         let p = snapshot.ok_or_else(|| IoError::Write("product was closed".into()))?;
+        if is_source(&req.path, p.file_path.as_deref()) {
+            return Err(IoError::Write("cannot overwrite the source file".into()));
+        }
         GeoTiffWriter.write(&p, &req.path, &req.opts, &cache)
     })
 }
@@ -233,7 +259,7 @@ mod tests {
         // fully outside: empty at the clamped corner
         let v = test_view(1.0, (-500.0, 50.0));
         let g = view_region(&v, vp, 200, 100);
-        assert_eq!((g.x, g.w), (0, 0));
+        assert_eq!(g, r(0, 10, 0, 80));
     }
 
     #[test]
@@ -276,6 +302,26 @@ mod tests {
         run_export(&st, req).join().unwrap().unwrap();
         let p = st.registry.open(&out).unwrap();
         assert_eq!((p.width, p.height, p.bands.len()), (20, 10, 1));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn run_export_refuses_the_source_file() {
+        snap_io_gdal::init_error_handler();
+        let dir = fixtures::temp_dir("gui-export-src");
+        let fx = fixtures::make_fixture(&dir, "a.tif", 8, 8, DataType::U8, 1, false, None, None);
+        let mut st = AppState::new();
+        let id = st.open_path(&fx.path).unwrap();
+        assert!(is_source(&fx.path, Some(&fx.path)));
+        assert!(is_source(&dir.join(".").join("a.tif"), Some(&fx.path)));
+        assert!(!is_source(&dir.join("b.tif"), Some(&fx.path)));
+        assert!(!is_source(&fx.path, None));
+        let req = ExportRequest {
+            product: id,
+            path: fx.path.clone(),
+            opts: WriteOpts::default(),
+        };
+        assert!(run_export(&st, req).join().unwrap().is_err());
         std::fs::remove_dir_all(dir).ok();
     }
 }
