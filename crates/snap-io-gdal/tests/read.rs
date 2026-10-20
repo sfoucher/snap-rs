@@ -12,7 +12,34 @@ fn tile_matches_gdal_read() {
     let t = s.read_tile(0, 1, 1).unwrap();
     assert_eq!(t.shape(), (188, 488));
     assert_eq!(t.get_f64(0, 0), ((512 * 1000 + 512) % 1000) as f64);
+    assert_eq!(t.get_f64(0, 1), 513.0);
     assert!(s.read_tile(0, 2, 0).is_err());
+    // width 1001: value = (row + col) % 1000, so a wrong y offset or transpose fails
+    let g = make_fixture(
+        &dir,
+        "g.tif",
+        1001,
+        700,
+        DataType::U16,
+        2,
+        false,
+        None,
+        None,
+    );
+    let t = GdalSource::open(&g.path, 1)
+        .unwrap()
+        .read_tile(0, 0, 1)
+        .unwrap();
+    assert_eq!(t.shape(), (188, 512));
+    assert_eq!(
+        (t.get_f64(0, 0), t.get_f64(1, 0), t.get_f64(0, 1)),
+        (512.0, 513.0, 513.0)
+    );
+    let t2 = GdalSource::open(&g.path, 2)
+        .unwrap()
+        .read_tile(0, 0, 1)
+        .unwrap();
+    assert_eq!(t2.get_f64(0, 0), 612.0);
     std::fs::remove_dir_all(dir).unwrap();
 }
 

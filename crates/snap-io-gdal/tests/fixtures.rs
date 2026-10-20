@@ -28,6 +28,7 @@ pub fn temp_dir(tag: &str) -> PathBuf {
 }
 
 /// Tiled GTiff. Pixel value of band k (1-based) = (row*w + col + (k-1)*100) % 1000.
+/// U8/I8 values wrap when cast (values reach 999).
 /// Deviation from the plan text ("k*1000 before the modulo"), which is a no-op and
 /// would make all bands identical (ruling R17); band 1 is unchanged.
 #[allow(clippy::too_many_arguments)]

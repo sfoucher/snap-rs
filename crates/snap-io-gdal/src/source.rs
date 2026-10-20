@@ -1,4 +1,4 @@
-use crate::errors::{init_error_handler, last_gdal_error};
+use crate::errors::{clear_gdal_error, init_error_handler, last_gdal_error, open_dataset};
 use gdal::raster::{GdalDataType, GdalType};
 use gdal::Dataset;
 use ndarray::Array2;
@@ -46,6 +46,7 @@ fn read<T: Copy + GdalType>(
     off: (isize, isize),
     wh: (usize, usize),
 ) -> Result<Array2<T>, CoreError> {
+    clear_gdal_error();
     let buf = b
         .read_as::<T>(off, wh, wh, None)
         .map_err(|e| CoreError::Other(gdal_msg(e)))?;
@@ -66,7 +67,7 @@ impl GdalSource {
     /// `band` is 1-based. Reads metadata only; the dataset is reopened lazily by `read_tile`.
     pub fn open(path: &Path, band: usize) -> Result<Self, IoError> {
         init_error_handler();
-        let ds = Dataset::open(path).map_err(|e| open_err(path, e))?;
+        let ds = open_dataset(path).map_err(|e| open_err(path, e))?;
         if band == 0 || band > ds.raster_count() {
             return Err(IoError::Open {
                 path: path.to_path_buf(),
@@ -74,10 +75,10 @@ impl GdalSource {
             });
         }
         let b = ds.rasterband(band).map_err(|e| open_err(path, e))?;
-        let gt = b.band_type();
-        let data_type = map_type(gt).ok_or_else(|| IoError::Open {
+        let bt = b.band_type();
+        let data_type = map_type(bt).ok_or_else(|| IoError::Open {
             path: path.to_path_buf(),
-            msg: format!("unsupported data type {}", gt.name()),
+            msg: format!("unsupported data type {}", bt.name()),
         })?;
         let (w, h) = b.size();
         let overviews = b.overview_count().map_err(|e| open_err(path, e))?.max(0) as u8;
@@ -111,13 +112,14 @@ impl RasterSource for GdalSource {
             return Err(oor);
         }
         let mut guard = self.ds.lock().unwrap_or_else(|p| {
+            self.ds.clear_poison();
             let mut g = p.into_inner();
             *g = None;
             g
         });
         if guard.is_none() {
             init_error_handler();
-            let ds = Dataset::open(&self.path).map_err(|e| CoreError::Other(gdal_msg(e)))?;
+            let ds = open_dataset(&self.path).map_err(|e| CoreError::Other(gdal_msg(e)))?;
             *guard = Some(ds);
         }
         let ds = guard.as_ref().expect("opened above");
@@ -127,6 +129,7 @@ impl RasterSource for GdalSource {
         let band = if level == 0 {
             band
         } else {
+            clear_gdal_error();
             band.overview(level as usize - 1)
                 .map_err(|e| CoreError::Other(gdal_msg(e)))?
         };
