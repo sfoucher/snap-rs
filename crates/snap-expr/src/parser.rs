@@ -1,4 +1,5 @@
 use chumsky::prelude::*;
+use chumsky::Stream;
 
 use crate::ast::{BinOp, Expr, Func, Span, UnOp};
 use crate::error::ExprError;
@@ -87,11 +88,12 @@ fn expr_parser<'a>() -> P<'a, Expr> {
             )
             .collect::<String>();
 
-        let args = expr
-            .clone()
-            .padded()
-            .separated_by(just(','))
-            .delimited_by(just('('), just(')'));
+        let args = expr.clone().padded().separated_by(just(',')).delimited_by(
+            filter(|c: &char| c.is_whitespace())
+                .repeated()
+                .ignore_then(just('(')),
+            just(')'),
+        );
 
         let atom = ident
             .then(args.or_not())
@@ -206,23 +208,18 @@ const UNKNOWN: &str = "\0unknown:";
 const ARITY: &str = "\0arity:";
 
 pub fn parse(src: &str) -> Result<Expr, ExprError> {
-    // chumsky spans are char indices; map to byte offsets.
-    let bytes: Vec<usize> = src
-        .char_indices()
-        .map(|(i, _)| i)
-        .chain([src.len()])
-        .collect();
-    let b = |s: std::ops::Range<usize>| Span {
-        start: bytes[s.start.min(bytes.len() - 1)],
-        end: bytes[s.end.min(bytes.len() - 1)],
-    };
+    // Byte-indexed stream so every span is a byte offset into `src`.
+    let stream = Stream::from_iter(
+        src.len()..src.len(),
+        src.char_indices().map(|(i, c)| (c, i..i + c.len_utf8())),
+    );
     expr_parser()
         .padded()
         .then_ignore(end())
-        .parse(src)
+        .parse(stream)
         .map_err(|errs| {
             let e = &errs[0];
-            let span = b(e.span());
+            let span = sp(e.span());
             match e.reason() {
                 chumsky::error::SimpleReason::Custom(m) if m.starts_with(UNKNOWN) => {
                     ExprError::UnknownFunction {
@@ -292,6 +289,22 @@ mod tests {
         assert_eq!(
             parse("$1.B4").unwrap(),
             Expr::Ident("$1.B4".into(), sp(0, 5))
+        );
+    }
+
+    #[test]
+    fn spans_are_byte_offsets_and_call_whitespace() {
+        assert_eq!(
+            parse("\u{3000}a\u{3000}").unwrap(),
+            Expr::Ident("a".into(), sp(3, 4))
+        );
+        let strip = |e: Expr| match e {
+            Expr::Call(f, a, _) => (f, a.len()),
+            o => panic!("{o:?}"),
+        };
+        assert_eq!(
+            strip(parse("sqrt (1)").unwrap()),
+            strip(parse("sqrt(1)").unwrap())
         );
     }
 
