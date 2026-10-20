@@ -330,6 +330,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "gdal"
+version = "0.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82ab834e8be6b54fee3d0141fce5e776ad405add1f9d0da054281926e0d35a9f"
+dependencies = [
+ "bitflags",
+ "chrono",
+ "gdal-sys",
+ "geo-types",
+ "libc",
+ "once_cell",
+ "semver",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "gdal-sys"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18ad5d608ee6726efcf6e1d91261eb6dec7da3ee7db6bda984cdfb8a7d65ebf9"
+dependencies = [
+ "libc",
+ "pkg-config",
+ "semver",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -774,6 +801,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "semver"
+version = "1.0.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+
+[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -876,6 +909,13 @@ dependencies = [
 [[package]]
 name = "snap-io-gdal"
 version = "0.1.0"
+dependencies = [
+ "gdal",
+ "log",
+ "ndarray",
+ "snap-core",
+ "snap-io",
+]
 
 [[package]]
 name = "stacker"
