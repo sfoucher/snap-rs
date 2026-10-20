@@ -1,9 +1,11 @@
+mod cache;
 mod datatype;
 mod error;
 mod pyramid;
 mod raster;
 mod tile;
 
+pub use cache::{TileCache, TileKey, TileState};
 pub use datatype::{DataType, Scaling};
 pub use error::{CoreError, GeoError};
 pub use pyramid::{downsample2, Pyramid};

@@ -1,0 +1,223 @@
+use std::collections::{HashMap, HashSet};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+
+use lru::LruCache;
+
+use crate::{CoreError, ProductId, RasterSource, Tile};
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct TileKey {
+    pub product: ProductId,
+    pub band: String,
+    pub level: u8,
+    pub tx: u32,
+    pub ty: u32,
+}
+
+pub enum TileState {
+    Ready(Arc<Tile>),
+    Pending,
+    Failed(String),
+}
+
+const MAX_FAILURES: usize = 1024;
+
+pub struct TileCache {
+    inner: Arc<Inner>,
+    pool: rayon::ThreadPool,
+}
+
+struct Inner {
+    state: Mutex<State>,
+    budget_bytes: usize,
+    tx: Sender<TileKey>,
+}
+
+struct State {
+    tiles: LruCache<TileKey, Arc<Tile>>,
+    used_bytes: usize,
+    pending: HashSet<TileKey>,
+    failures: HashMap<TileKey, String>,
+}
+
+impl Inner {
+    fn insert(&self, key: TileKey, tile: Arc<Tile>) {
+        let mut st = self.state.lock().unwrap();
+        st.used_bytes += tile.byte_len();
+        if let Some(old) = st.tiles.put(key, tile) {
+            st.used_bytes -= old.byte_len();
+        }
+        while st.used_bytes > self.budget_bytes {
+            match st.tiles.pop_lru() {
+                Some((_, t)) => st.used_bytes -= t.byte_len(),
+                None => break,
+            }
+        }
+    }
+}
+
+impl TileCache {
+    pub fn new(budget_bytes: usize) -> (Arc<Self>, Receiver<TileKey>) {
+        let (tx, rx) = channel();
+        let inner = Arc::new(Inner {
+            state: Mutex::new(State {
+                tiles: LruCache::unbounded(),
+                used_bytes: 0,
+                pending: HashSet::new(),
+                failures: HashMap::new(),
+            }),
+            budget_bytes,
+            tx,
+        });
+        let pool = rayon::ThreadPoolBuilder::new()
+            .build()
+            .expect("tile cache thread pool");
+        (Arc::new(TileCache { inner, pool }), rx)
+    }
+
+    pub fn get(&self, key: &TileKey, source: &Arc<dyn RasterSource>) -> TileState {
+        {
+            let mut st = self.inner.state.lock().unwrap();
+            if let Some(t) = st.tiles.get(key) {
+                return TileState::Ready(t.clone());
+            }
+            if let Some(msg) = st.failures.get(key) {
+                return TileState::Failed(msg.clone());
+            }
+            if !st.pending.insert(key.clone()) {
+                return TileState::Pending;
+            }
+        }
+        let (inner, source, key) = (self.inner.clone(), source.clone(), key.clone());
+        self.pool.spawn(move || {
+            let result = source.read_tile(key.level, key.tx, key.ty);
+            match result {
+                Ok(tile) => inner.insert(key.clone(), Arc::new(tile)),
+                Err(e) => {
+                    let mut st = inner.state.lock().unwrap();
+                    // ponytail: wholesale clear when full; an LRU would keep recent failures.
+                    if st.failures.len() >= MAX_FAILURES {
+                        st.failures.clear();
+                    }
+                    st.failures.insert(key.clone(), e.to_string());
+                }
+            }
+            inner.state.lock().unwrap().pending.remove(&key);
+            let _ = inner.tx.send(key);
+        });
+        TileState::Pending
+    }
+
+    pub fn get_blocking(
+        &self,
+        key: &TileKey,
+        source: &Arc<dyn RasterSource>,
+    ) -> Result<Arc<Tile>, CoreError> {
+        if let Some(t) = self.inner.state.lock().unwrap().tiles.get(key) {
+            return Ok(t.clone());
+        }
+        let tile = Arc::new(source.read_tile(key.level, key.tx, key.ty)?);
+        self.inner.insert(key.clone(), tile.clone());
+        Ok(tile)
+    }
+
+    pub fn peek(&self, key: &TileKey) -> Option<Arc<Tile>> {
+        self.inner.state.lock().unwrap().tiles.peek(key).cloned()
+    }
+
+    pub fn evict_product(&self, id: ProductId) {
+        let mut st = self.inner.state.lock().unwrap();
+        let doomed: Vec<TileKey> = st
+            .tiles
+            .iter()
+            .filter(|(k, _)| k.product == id)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in doomed {
+            if let Some(t) = st.tiles.pop(&k) {
+                st.used_bytes -= t.byte_len();
+            }
+        }
+        st.failures.retain(|k, _| k.product != id);
+    }
+
+    pub fn used_bytes(&self) -> usize {
+        self.inner.state.lock().unwrap().used_bytes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{DataType, MemorySource};
+    use ndarray::Array2;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    fn key(tx: u32) -> TileKey {
+        TileKey {
+            product: ProductId(1),
+            band: "b".into(),
+            level: 0,
+            tx,
+            ty: 0,
+        }
+    }
+
+    fn mem(w: usize, h: usize) -> Arc<dyn RasterSource> {
+        Arc::new(MemorySource::new(Array2::zeros((h, w))))
+    }
+
+    #[test]
+    fn miss_is_pending_then_ready() {
+        let (cache, rx) = TileCache::new(1 << 30);
+        let src = mem(512, 512);
+        assert!(matches!(cache.get(&key(0), &src), TileState::Pending));
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), key(0));
+        assert!(matches!(cache.get(&key(0), &src), TileState::Ready(_)));
+    }
+
+    #[test]
+    fn eviction_respects_budget() {
+        let budget = 3 * 512 * 512 * 4;
+        let (cache, _rx) = TileCache::new(budget);
+        let src = mem(512 * 5, 512);
+        for tx in 0..5 {
+            cache.get_blocking(&key(tx), &src).unwrap();
+        }
+        assert!(cache.used_bytes() <= budget);
+        assert!(cache.peek(&key(0)).is_none());
+    }
+
+    struct Failing(AtomicUsize);
+
+    impl RasterSource for Failing {
+        fn data_type(&self) -> DataType {
+            DataType::F32
+        }
+        fn size(&self) -> (u32, u32) {
+            (512, 512)
+        }
+        fn levels(&self) -> u8 {
+            1
+        }
+        fn read_tile(&self, _: u8, _: u32, _: u32) -> Result<Tile, CoreError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(CoreError::Other("boom".into()))
+        }
+    }
+
+    #[test]
+    fn failure_is_reported_once() {
+        let (cache, rx) = TileCache::new(1 << 30);
+        let failing = Arc::new(Failing(AtomicUsize::new(0)));
+        let src: Arc<dyn RasterSource> = failing.clone();
+        assert!(matches!(cache.get(&key(0), &src), TileState::Pending));
+        rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        for _ in 0..3 {
+            assert!(matches!(cache.get(&key(0), &src), TileState::Failed(_)));
+        }
+        assert_eq!(failing.0.load(Ordering::SeqCst), 1);
+    }
+}
