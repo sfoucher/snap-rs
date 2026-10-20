@@ -10,6 +10,7 @@ snap-io-gdal = { path = "../snap-io-gdal" }
 eframe = { workspace = true, features = ["wgpu"] }
 egui.workspace = true
 egui_dock.workspace = true
+egui_plot.workspace = true
 rfd.workspace = true
 log.workspace = true
 env_logger.workspace = true
@@ -17,3 +18,4 @@ sysinfo.workspace = true
 
 [dev-dependencies]
 gdal.workspace = true
+ndarray.workspace = true

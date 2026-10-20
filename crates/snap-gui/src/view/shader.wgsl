@@ -38,8 +38,10 @@ fn is_nan(x: f32) -> bool {
 }
 
 fn chan(x: f32, i: u32) -> f32 {
-    let v = clamp((x - p.min[i]) / max(p.max[i] - p.min[i], 1e-20), 0.0, 1.0);
-    return pow(v, 1.0 / p.gamma[i]);
+    // Dragged min/max can cross: treat an empty window as 1 unit wide.
+    let w = p.max[i] - p.min[i];
+    let v = clamp((x - p.min[i]) / select(1.0, w, w > 1e-20), 0.0, 1.0);
+    return pow(v, 1.0 / max(p.gamma[i], 1e-3));
 }
 
 @fragment

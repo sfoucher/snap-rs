@@ -6,7 +6,7 @@ pub use gpu::GpuState;
 
 use snap_core::{level_size, tile_rect, DataType, ProductId, Rect, TILE};
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Stretch {
     pub min: f32,
     pub max: f32,
@@ -33,9 +33,8 @@ impl Stretch {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Palette {
-    #[allow(dead_code)] // shown by the colour manipulation task
     pub name: String,
     pub stops: Vec<(f32, [u8; 3])>,
 }

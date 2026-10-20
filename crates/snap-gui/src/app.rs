@@ -1,10 +1,12 @@
 use crate::explorer::{explorer_ui, ExplorerAction};
-use crate::view::{canvas_ui, GpuState, ViewState};
+use crate::panels::color::{color_panel_ui, default_stretch};
+use crate::view::{canvas_ui, GpuState, Stretch, ViewSources, ViewState};
 use egui_dock::{DockArea, DockState, NodeIndex};
-use snap_core::{Product, ProductId, TileCache, TileKey};
+use snap_core::{compute_stats_coarsest, Product, ProductId, TileCache, TileKey};
 use snap_io::{IoError, Registry};
+use std::collections::HashSet;
 use std::path::Path;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -20,6 +22,10 @@ pub struct AppState {
     pub views: Vec<ViewState>,
     pub active_view: Option<usize>,
     pub errors: Vec<String>,
+    /// Bands whose background statistics job has been started (never retried).
+    stats_started: HashSet<(ProductId, String)>,
+    stats_err_tx: Sender<String>,
+    stats_err_rx: Receiver<String>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -50,6 +56,7 @@ impl AppState {
         sys.refresh_memory();
         let budget = (sys.total_memory() / 4).max(MIN_CACHE) as usize;
         let (cache, cache_rx) = TileCache::new(budget);
+        let (stats_err_tx, stats_err_rx) = channel();
         Self {
             registry,
             cache,
@@ -59,6 +66,53 @@ impl AppState {
             views: Vec::new(),
             active_view: None,
             errors: Vec::new(),
+            stats_started: HashSet::new(),
+            stats_err_tx,
+            stats_err_rx,
+        }
+    }
+
+    /// Starts missing band statistics on background threads (no product lock is held
+    /// while computing) and applies the default stretch to channels still on the
+    /// data-type range once their statistics exist.
+    pub fn drive_stats(&mut self, ctx: &egui::Context) {
+        self.errors.extend(self.stats_err_rx.try_iter());
+        for vi in 0..self.views.len() {
+            let pid = self.views[vi].product;
+            let names: Vec<String> = match &self.views[vi].sources {
+                ViewSources::Single(n) => vec![n.clone()],
+                ViewSources::Rgb(n) => n.to_vec(),
+            };
+            let Some(prod) = self.product(pid).cloned() else {
+                continue;
+            };
+            for (ch, name) in names.iter().enumerate() {
+                let p = prod.read().unwrap();
+                let Some(b) = p.band(name) else { continue };
+                if let Some(st) = b.stats.get() {
+                    let view = &mut self.views[vi];
+                    if st.sample_count > 0 && view.stretch[ch] == Stretch::for_type(b.data_type) {
+                        view.stretch[ch] = default_stretch(st);
+                    }
+                } else if self.stats_started.insert((pid, name.clone())) {
+                    let (src, nd) = (b.source.clone(), b.no_data);
+                    let (prod, name) = (prod.clone(), name.clone());
+                    let (ctx, tx) = (ctx.clone(), self.stats_err_tx.clone());
+                    std::thread::spawn(move || {
+                        match compute_stats_coarsest(&src, nd) {
+                            Ok(st) => {
+                                if let Some(b) = prod.read().unwrap().band(&name) {
+                                    let _ = b.stats.set(st);
+                                }
+                            }
+                            Err(e) => {
+                                let _ = tx.send(format!("statistics for {name}: {e}"));
+                            }
+                        }
+                        ctx.request_repaint();
+                    });
+                }
+            }
         }
     }
 
@@ -165,6 +219,7 @@ impl egui_dock::TabViewer for Viewer<'_> {
             Pane::Image(i) => {
                 canvas_ui(ui, self.state, *i);
             }
+            Pane::Color => color_panel_ui(ui, self.state),
             _ => {}
         }
     }
@@ -348,6 +403,7 @@ impl eframe::App for SnapApp {
         for f in dropped.iter().filter_map(|f| f.path.as_ref()) {
             self.open(f);
         }
+        self.state.drive_stats(ctx);
         if self.state.cache_rx.try_iter().count() > 0 {
             ctx.request_repaint();
         }

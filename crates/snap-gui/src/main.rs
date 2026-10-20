@@ -1,5 +1,7 @@
 mod app;
 mod explorer;
+mod palette_cpd;
+mod panels;
 mod view;
 
 use app::SnapApp;
