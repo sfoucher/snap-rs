@@ -35,6 +35,15 @@ fn is_source(out: &std::path::Path, source: Option<&std::path::Path>) -> bool {
     }
 }
 
+/// Overwriting is allowed when the target is new or the tick was given for this very path.
+fn overwrite_ok(
+    exists: bool,
+    ticked_for: Option<&std::path::Path>,
+    target: &std::path::Path,
+) -> bool {
+    !exists || ticked_for == Some(target)
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Region {
     Full,
@@ -50,7 +59,10 @@ struct Form {
     cog: bool,
     compression: Compression,
     path: String,
-    overwrite: bool,
+    /// Target the overwrite tick was given for; it authorises that path only.
+    overwrite_for: Option<PathBuf>,
+    /// (path, is source, exists), refreshed only when the path changes.
+    status: Option<(PathBuf, bool, bool)>,
 }
 
 const COMPRESSIONS: [(Compression, &str); 4] = [
@@ -105,7 +117,8 @@ pub fn export_dialog(
         cog: false,
         compression: Compression::Deflate,
         path: default_path(file.as_deref(), &name),
-        overwrite: false,
+        overwrite_for: None,
+        status: None,
     });
     if f.region == Region::View && view_rect.is_none() {
         f.region = Region::Full;
@@ -116,14 +129,17 @@ pub fn export_dialog(
         Region::Custom => f.custom,
     };
     let out = PathBuf::from(f.path.trim());
-    let is_src = is_source(&out, file.as_deref());
-    let exists = !is_src && out.exists();
+    if f.status.as_ref().map(|s| &s.0) != Some(&out) {
+        let is_src = is_source(&out, file.as_deref());
+        f.status = Some((out.clone(), is_src, !is_src && out.exists()));
+    }
+    let (_, is_src, exists) = f.status.clone().unwrap();
     let valid = rect.w > 0
         && rect.h > 0
         && !f.path.trim().is_empty()
         && f.bands.iter().any(|b| b.1)
         && !is_src
-        && (!exists || f.overwrite);
+        && overwrite_ok(exists, f.overwrite_for.as_deref(), &out);
     let (mut ok, mut cancel) = (false, false);
     egui::Window::new("Export Subset")
         .collapsible(false)
@@ -185,7 +201,9 @@ pub fn export_dialog(
             if is_src {
                 ui.colored_label(egui::Color32::RED, "cannot overwrite the source file");
             } else if exists {
-                ui.checkbox(&mut f.overwrite, "Overwrite existing file");
+                let mut on = f.overwrite_for.as_deref() == Some(out.as_path());
+                ui.checkbox(&mut on, "Overwrite existing file");
+                f.overwrite_for = on.then(|| out.clone());
             }
             ui.horizontal(|ui| {
                 ok = ui.add_enabled(valid, egui::Button::new("OK")).clicked();
@@ -323,5 +341,15 @@ mod tests {
         };
         assert!(run_export(&st, req).join().unwrap().is_err());
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn overwrite_tick_authorises_only_its_own_target() {
+        use std::path::Path;
+        let (a, b) = (Path::new("a.tif"), Path::new("b.tif"));
+        assert!(overwrite_ok(true, Some(a), a));
+        assert!(!overwrite_ok(true, Some(a), b));
+        assert!(!overwrite_ok(true, None, b));
+        assert!(overwrite_ok(false, None, b));
     }
 }
