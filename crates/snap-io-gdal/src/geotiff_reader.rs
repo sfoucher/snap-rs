@@ -51,6 +51,7 @@ pub(crate) fn build_product(
     let mut p = Product::new(&name, product_type, w as u32, h as u32);
     p.file_path = Some(path.to_path_buf());
     let key = Pyramid::cache_key(path)?;
+    let dimap = crate::dimap_names::read(path);
     let shared = SharedDs::default();
     for i in 1..=ds.raster_count() {
         let b = ds.rasterband(i).map_err(|e| open_err(path, e))?;
@@ -59,7 +60,12 @@ pub(crate) fn build_product(
             path: path.to_path_buf(),
             msg: format!("unsupported data type {}", bt.name()),
         })?;
-        let desc = b.description().unwrap_or_default();
+        let mut desc = b.description().unwrap_or_default();
+        let mut name = desc.clone();
+        if let Some((n, d)) = dimap.get(&(i - 1)).filter(|_| name.is_empty()) {
+            name = n.clone();
+            desc = d.clone().unwrap_or_default();
+        }
         let unit = b.unit();
         let (bw, bh) = b.size();
         let cache_dir = dirs::cache_dir().map(|d| {
@@ -74,10 +80,10 @@ pub(crate) fn build_product(
             b.no_data_value(),
         ));
         p.add_band(Band {
-            name: if desc.is_empty() {
+            name: if name.is_empty() {
                 format!("band_{i}")
             } else {
-                desc.clone()
+                name
             },
             data_type,
             width: bw as u32,

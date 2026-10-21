@@ -1,4 +1,5 @@
 mod bundle;
+mod dimap_names;
 mod errors;
 mod generic_reader;
 mod geotiff_reader;
