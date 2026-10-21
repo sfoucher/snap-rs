@@ -11,7 +11,11 @@ pub struct Pyramid {
     inner: Arc<dyn RasterSource>,
     levels: u8,
     cache_dir: Option<PathBuf>,
+    no_data: Option<f64>,
 }
+
+/// Bump when the sidecar contents change meaning, so stale sidecars are ignored.
+const SIDECAR_VERSION: &[u8] = b"snap-rs pyramid v2 (no_data-aware)\0";
 
 impl Pyramid {
     /// Number of levels: smallest n whose level fits in one tile, plus one for level 0.
@@ -26,13 +30,19 @@ impl Pyramid {
         }
     }
 
-    pub fn new(inner: Arc<dyn RasterSource>, cache_dir: Option<PathBuf>) -> Self {
+    /// `no_data` pixels are left out of the coarse-level means, like NaN.
+    pub fn new(
+        inner: Arc<dyn RasterSource>,
+        cache_dir: Option<PathBuf>,
+        no_data: Option<f64>,
+    ) -> Self {
         let (w, h) = inner.size();
         let levels = Self::needed_levels(w, h).max(inner.levels());
         Pyramid {
             inner,
             levels,
             cache_dir,
+            no_data,
         }
     }
 
@@ -44,6 +54,7 @@ impl Pyramid {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         let mut h = Sha256::new();
+        h.update(SIDECAR_VERSION);
         h.update(canon.as_os_str().to_string_lossy().as_bytes());
         h.update(mtime.to_le_bytes());
         h.update(meta.len().to_le_bytes());
@@ -63,7 +74,7 @@ impl Pyramid {
         for dy in 0..2u32 {
             for dx in 0..2u32 {
                 let child = match self.read_tile(level - 1, 2 * tx + dx, 2 * ty + dy) {
-                    Ok(t) => downsample2(&t, false),
+                    Ok(t) => downsample2_nodata(&t, false, self.no_data),
                     Err(CoreError::OutOfRange { .. }) => continue,
                     Err(e) => return Err(e),
                 };
@@ -235,6 +246,12 @@ fn from_f64(dt: DataType, a: &Array2<f64>) -> Tile {
 
 /// Halve a tile: mean of each 2x2 block ignoring NaN, or the top-left pixel when `is_flag`.
 pub fn downsample2(tile: &Tile, is_flag: bool) -> Tile {
+    downsample2_nodata(tile, is_flag, None)
+}
+
+/// As `downsample2`, also ignoring `no_data` pixels (compared in the tile's type, R15);
+/// a block with no valid pixel becomes `no_data` (NaN when None).
+pub fn downsample2_nodata(tile: &Tile, is_flag: bool, no_data: Option<f64>) -> Tile {
     let (rows, cols) = tile.shape();
     let (or, oc) = (rows.div_ceil(2), cols.div_ceil(2));
     let out = Array2::from_shape_fn((or, oc), |(i, j)| {
@@ -245,14 +262,14 @@ pub fn downsample2(tile: &Tile, is_flag: bool) -> Tile {
         for r in 2 * i..(2 * i + 2).min(rows) {
             for c in 2 * j..(2 * j + 2).min(cols) {
                 let v = tile.get_f64(r, c);
-                if !v.is_nan() {
+                if !v.is_nan() && !tile.is_no_data(v, no_data) {
                     sum += v;
                     n += 1;
                 }
             }
         }
         if n == 0 {
-            f64::NAN
+            no_data.unwrap_or(f64::NAN)
         } else if tile.data_type().is_float() {
             sum / n as f64
         } else {
@@ -339,8 +356,46 @@ mod tests {
     }
 
     #[test]
+    fn downsample_skips_nodata() {
+        // I16, nodata -9999 in one corner of the first block; second block all nodata
+        let nd = -9999i16;
+        let t =
+            Tile::I16(Array2::from_shape_vec((2, 4), vec![nd, 2, nd, nd, 4, 6, nd, nd]).unwrap());
+        let d = downsample2_nodata(&t, false, Some(-9999.0));
+        assert_eq!(d.get_f64(0, 0), 4.0);
+        assert_eq!(d.get_f64(0, 1), -9999.0);
+        // without no_data the old behaviour is kept
+        assert_eq!(downsample2(&t, false).get_f64(0, 0), -2497.0);
+        // F32 with a nodata not exactly representable in f32
+        let f = -3.4e38f32;
+        let t =
+            Tile::F32(Array2::from_shape_vec((2, 4), vec![f, 1.0, f, f, 2.0, 3.0, f, f]).unwrap());
+        let d = downsample2_nodata(&t, false, Some(-3.4e38));
+        assert_eq!(d.get_f64(0, 0), 2.0);
+        assert_eq!(d.get_f64(0, 1), f as f64);
+    }
+
+    #[test]
+    fn pyramid_level_ignores_nodata() {
+        // 4x4 tile at level 0 of a 1024 image: top-left 2x2 has one nodata corner
+        let mut a = Array2::from_elem((1024, 1024), 8.0f32);
+        a[(0, 0)] = -1.0;
+        a[(0, 1)] = 2.0;
+        a[(1, 0)] = 2.0;
+        a[(1, 1)] = 2.0;
+        for (r, c) in [(0, 2), (0, 3), (1, 2), (1, 3)] {
+            a[(r, c)] = -1.0;
+        }
+        let p = Pyramid::new(Arc::new(MemorySource::new(a)), None, Some(-1.0));
+        let t = p.read_tile(1, 0, 0).unwrap();
+        assert_eq!(t.get_f64(0, 0), 2.0);
+        assert_eq!(t.get_f64(0, 1), -1.0);
+        assert_eq!(t.get_f64(1, 1), 8.0);
+    }
+
+    #[test]
     fn level1_from_memory_source() {
-        let p = Pyramid::new(ramp(1024), None);
+        let p = Pyramid::new(ramp(1024), None, None);
         let t = p.read_tile(1, 0, 0).unwrap();
         assert_eq!(t.shape(), (512, 512));
         let inner = p.read_tile(0, 0, 0).unwrap();
@@ -361,7 +416,7 @@ mod tests {
     #[test]
     fn sidecar_roundtrip_and_corruption() {
         let dir = temp_dir("sidecar");
-        let p = Pyramid::new(ramp(1024), Some(dir.clone()));
+        let p = Pyramid::new(ramp(1024), Some(dir.clone()), None);
         let a = p.read_tile(1, 0, 0).unwrap();
         let f = dir.join("level1").join("0_0.bin");
         assert_eq!(std::fs::metadata(&f).unwrap().len(), 9 + 512 * 512 * 4);
@@ -390,6 +445,21 @@ mod tests {
         std::fs::write(&f, b"abcdef").unwrap();
         assert_ne!(k1, Pyramid::cache_key(&f).unwrap());
         assert!(Pyramid::cache_key(&dir.join("missing")).is_err());
+        // salted with the sidecar version: keys of the pre-no_data scheme don't match
+        let canon = f.canonicalize().unwrap();
+        let meta = std::fs::metadata(&canon).unwrap();
+        let mtime = meta
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut old = Sha256::new();
+        old.update(canon.as_os_str().to_string_lossy().as_bytes());
+        old.update(mtime.to_le_bytes());
+        old.update(meta.len().to_le_bytes());
+        let old: String = old.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        assert_ne!(Pyramid::cache_key(&f).unwrap(), old);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

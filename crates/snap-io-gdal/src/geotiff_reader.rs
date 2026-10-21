@@ -70,6 +70,7 @@ pub(crate) fn build_product(
         let source = Arc::new(Pyramid::new(
             Arc::new(GdalSource::open(path, i)?),
             cache_dir,
+            b.no_data_value(),
         ));
         p.add_band(Band {
             name: if desc.is_empty() {

@@ -8,7 +8,7 @@ mod tile;
 pub use cache::{TileCache, TileKey, TileState};
 pub use datatype::{DataType, Scaling};
 pub use error::{CoreError, GeoError};
-pub use pyramid::{downsample2, Pyramid};
+pub use pyramid::{downsample2, downsample2_nodata, Pyramid};
 pub use raster::{MemorySource, RasterSource};
 pub use tile::{level_size, tile_count, tile_rect, Rect, Tile, TILE};
 mod geocoding;

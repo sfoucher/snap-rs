@@ -59,6 +59,16 @@ impl Tile {
         each!(self, a => a.dim())
     }
 
+    /// True when pixel value `v` (read via get_f64) is `no_data`, compared in the
+    /// tile's own type (R15): F32 pixels against `nd as f32`, others in f64.
+    pub(crate) fn is_no_data(&self, v: f64, no_data: Option<f64>) -> bool {
+        match (no_data, self) {
+            (Some(nd), Tile::F32(_)) => v as f32 == nd as f32,
+            (Some(nd), _) => v == nd,
+            (None, _) => false,
+        }
+    }
+
     pub fn get_f64(&self, row: usize, col: usize) -> f64 {
         each!(self, a => a[(row, col)] as f64)
     }

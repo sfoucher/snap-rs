@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{level_size, tile_count, CoreError, RasterSource, Tile};
+use crate::{level_size, tile_count, CoreError, RasterSource};
 
 const BINS: usize = 512;
 
@@ -48,16 +48,10 @@ fn for_valid(
         for tx in 0..nx {
             let tile = source.read_tile(level, tx, ty)?;
             let (rows, cols) = tile.shape();
-            // no_data compared in the band's own type (R15).
-            let is_nd = |v: f64| match (no_data, &tile) {
-                (Some(nd), Tile::F32(_)) => v as f32 == nd as f32,
-                (Some(nd), _) => v == nd,
-                (None, _) => false,
-            };
             for r in 0..rows {
                 for c in 0..cols {
                     let v = tile.get_f64(r, c);
-                    if v.is_finite() && !is_nd(v) {
+                    if v.is_finite() && !tile.is_no_data(v, no_data) {
                         f(v);
                     }
                 }
@@ -126,7 +120,7 @@ pub fn compute_stats_coarsest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DataType, MemorySource, Pyramid};
+    use crate::{DataType, MemorySource, Pyramid, Tile};
     use ndarray::Array2;
     use std::sync::Mutex;
 
@@ -208,7 +202,7 @@ mod tests {
     #[test]
     fn stats_sample_from_coarsest_level() {
         let ramp = Array2::from_shape_fn((4096, 4096), |(y, x)| (x + y) as f32);
-        let pyr: Arc<dyn RasterSource> = Arc::new(Pyramid::new(mem(ramp), None));
+        let pyr: Arc<dyn RasterSource> = Arc::new(Pyramid::new(mem(ramp), None, None));
         let cs = Arc::new(CountingSource {
             inner: pyr,
             levels: Mutex::new(vec![]),
