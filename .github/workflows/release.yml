@@ -1,0 +1,32 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  msi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches crate version
+        run: |
+          $v = (Select-String -Path crates/snap-gui/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$v" -ne "${{ github.ref_name }}") { throw "tag ${{ github.ref_name }} != crate version v$v" }
+      - uses: prefix-dev/setup-pixi@v0.11.2
+        with:
+          pixi-version: v0.82.0
+          locked: true
+          cache: true
+      - uses: Swatinem/rust-cache@v2
+      # WiX 7 needs an OSMF EULA acceptance; 5.x does not.
+      - name: Install WiX
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.dotnet\tools"
+      - run: ./ci/package-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snap-rs-msi
+          path: dist/*.msi
+          if-no-files-found: error
