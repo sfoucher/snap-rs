@@ -41,15 +41,16 @@ pub(crate) fn hover_requests(p: &Product, x: f64, y: f64) -> Vec<(TileKey, Arc<d
 }
 
 /// Starts background loads (non-blocking, deduped by the cache) for the hovered pixel's
-/// tiles, so Pixel Info fills in for bands that are not on screen.
-pub(crate) fn request_hover_tiles(state: &AppState, product: ProductId, x: f64, y: f64) {
+/// tiles, so Pixel Info fills in for bands that are not on screen. False when nothing was requested.
+pub(crate) fn request_hover_tiles(state: &AppState, product: ProductId, x: f64, y: f64) -> bool {
     let Some(p) = state.product(product) else {
-        return;
+        return false;
     };
     let reqs = hover_requests(&p.read().unwrap(), x, y);
-    for (key, src) in reqs {
-        state.cache.get(&key, &src);
+    for (key, src) in &reqs {
+        state.cache.get(key, src);
     }
+    !reqs.is_empty()
 }
 
 fn peek_value(state: &AppState, key: TileKey, ix: u32, iy: u32) -> Option<(DataType, f64)> {

@@ -319,6 +319,23 @@ const TOGGLES: [(Pane, &str); 5] = [
     (Pane::Masks, "Masks"),
 ];
 
+/// Hover tile bookkeeping: (tile to remember, whether to request it now). Outside the
+/// image nothing is remembered, so entering any tile from the margin requests it.
+fn hover_step(
+    prev: Option<(ProductId, u32, u32)>,
+    pid: ProductId,
+    x: f64,
+    y: f64,
+    w: u32,
+    h: u32,
+) -> (Option<(ProductId, u32, u32)>, bool) {
+    if !(x >= 0.0 && y >= 0.0 && x < w as f64 && y < h as f64) {
+        return (None, false);
+    }
+    let tile = (pid, x as u32 / TILE, y as u32 / TILE);
+    (Some(tile), prev != Some(tile))
+}
+
 pub struct SnapApp {
     state: AppState,
     dock: DockState<Pane>,
@@ -557,10 +574,18 @@ impl SnapApp {
         let Some(pid) = self.state.views.get(v).map(|v| v.product) else {
             return;
         };
-        let tile = (pid, x.max(0.0) as u32 / TILE, y.max(0.0) as u32 / TILE);
-        if self.hover_tile != Some(tile) {
-            self.hover_tile = Some(tile);
-            request_hover_tiles(&self.state, pid, x, y);
+        let size = self.state.product(pid).map(|p| {
+            let p = p.read().unwrap();
+            (p.width, p.height)
+        });
+        let Some((w, h)) = size else {
+            self.hover_tile = None;
+            return;
+        };
+        let (record, request) = hover_step(self.hover_tile, pid, x, y, w, h);
+        self.hover_tile = record;
+        if request && !request_hover_tiles(&self.state, pid, x, y) {
+            self.hover_tile = None;
         }
     }
 
@@ -718,6 +743,27 @@ mod tests {
     use std::path::Path;
 
     use super::fixtures;
+
+    #[test]
+    fn hover_tile_not_recorded_outside_image() {
+        let pid = ProductId(7);
+        // left margin of tile 0: nothing recorded or requested
+        let (prev, req) = hover_step(None, pid, -3.0, 10.0, 1000, 700);
+        assert_eq!((prev, req), (None, false));
+        // entering tile 0 requests it
+        let (prev, req) = hover_step(prev, pid, 2.0, 10.0, 1000, 700);
+        assert_eq!((prev, req), (Some((pid, 0, 0)), true));
+        // moving within the same tile does not re-request
+        assert_eq!(hover_step(prev, pid, 5.0, 11.0, 1000, 700), (prev, false));
+        // right margin past width, still within the last tile's span (512..1024)
+        let (prev, req) = hover_step(prev, pid, 1010.0, 10.0, 1000, 700);
+        assert_eq!((prev, req), (None, false));
+        // and back into that last tile requests it
+        assert_eq!(
+            hover_step(prev, pid, 990.0, 10.0, 1000, 700),
+            (Some((pid, 1, 0)), true)
+        );
+    }
 
     #[test]
     fn open_path_adds_product_and_close_removes() {
