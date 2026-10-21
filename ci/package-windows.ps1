@@ -1,5 +1,5 @@
 # Builds dist\snap-rs-<version>.msi from the pixi environment.
-#   powershell -File cipackage-windows.ps1
+#   powershell -File ci\package-windows.ps1
 #   ci\package-windows.ps1 -SkipBuild
 # Needs the WiX CLI on PATH. Use v5: dotnet tool install --global wix --version 5.0.2
 # (v7 refuses to run until you accept the paid-support OSMF EULA.)
