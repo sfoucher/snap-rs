@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{level_size, tile_count, CoreError, RasterSource};
+use crate::{level_size, tile_count, CoreError, RasterSource, Tile};
 
 const BINS: usize = 512;
 
@@ -34,7 +34,7 @@ impl BandStats {
     }
 }
 
-/// Visit every valid (non-NaN, != no_data) sample of `level`.
+/// Visit every valid (finite, != no_data) sample of `level`.
 fn for_valid(
     source: &Arc<dyn RasterSource>,
     no_data: Option<f64>,
@@ -48,10 +48,16 @@ fn for_valid(
         for tx in 0..nx {
             let tile = source.read_tile(level, tx, ty)?;
             let (rows, cols) = tile.shape();
+            // no_data compared in the band's own type (R15).
+            let is_nd = |v: f64| match (no_data, &tile) {
+                (Some(nd), Tile::F32(_)) => v as f32 == nd as f32,
+                (Some(nd), _) => v == nd,
+                (None, _) => false,
+            };
             for r in 0..rows {
                 for c in 0..cols {
                     let v = tile.get_f64(r, c);
-                    if !v.is_nan() && no_data != Some(v) {
+                    if v.is_finite() && !is_nd(v) {
                         f(v);
                     }
                 }
@@ -120,7 +126,7 @@ pub fn compute_stats_coarsest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DataType, MemorySource, Pyramid, Tile};
+    use crate::{DataType, MemorySource, Pyramid};
     use ndarray::Array2;
     use std::sync::Mutex;
 
@@ -150,6 +156,22 @@ mod tests {
         let a = Array2::from_shape_vec((1, 4), vec![5.0, f32::NAN, -9999.0, 5.0]).unwrap();
         let st = compute_stats(&mem(a), Some(-9999.0), 0).unwrap();
         assert_eq!((st.min, st.max, st.sample_count), (5.0, 5.0, 2));
+    }
+
+    #[test]
+    fn stats_exclude_infinities() {
+        let a = Array2::from_shape_vec((1, 4), vec![1.0, f32::INFINITY, f32::NEG_INFINITY, 3.0])
+            .unwrap();
+        let st = compute_stats(&mem(a), None, 0).unwrap();
+        assert_eq!((st.min, st.max, st.sample_count), (1.0, 3.0, 2));
+    }
+
+    #[test]
+    fn stats_f32_nodata_compared_as_f32() {
+        // -3.4e38 is not exactly representable in f32; the widened pixel != the f64 nodata.
+        let a = Array2::from_shape_vec((1, 3), vec![-3.4e38f32, 2.0, 4.0]).unwrap();
+        let st = compute_stats(&mem(a), Some(-3.4e38), 0).unwrap();
+        assert_eq!((st.min, st.max, st.sample_count), (2.0, 4.0, 2));
     }
 
     #[test]
