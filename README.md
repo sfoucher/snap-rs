@@ -2,8 +2,7 @@
 
 A Rust reimplementation of the concepts behind ESA SNAP: a product/band model, a tiled multi-resolution image viewer with geocoding, pixel info, band-maths expressions and GeoTIFF/COG export. GDAL and PROJ do the heavy lifting for I/O and map projections; the GUI is egui.
 
-<!-- TODO: screenshot of the viewer -->
-![screenshot placeholder](docs/screenshot.png)
+_Screenshot to come._
 
 ## Install and run
 
@@ -19,6 +18,16 @@ pixi run cargo run -p snap-gui -- path/to/image.tif   # opens one or more files
 CI covers Linux (apt GDAL) and Windows (pixi); macOS is untested for now.
 
 Without pixi, install GDAL (3.8-3.9 tested) and PROJ (>= 9.2) with pkg-config, then `cargo run -p snap-gui -- image.tif`. `cargo install` works the same way once those libraries are present.
+
+Rust 1.82 or newer is required.
+
+### Portable install
+
+At startup the viewer looks for `<exe dir>/share/gdal` and `<exe dir>/share/proj` and, when they exist, points `GDAL_DATA` / `PROJ_DATA` at them (unless you already set those variables). Ship the executable with those two folders copied from your GDAL/PROJ install to get a self-contained build.
+
+### Pyramid cache
+
+Images without enough internal overviews get pyramid levels computed once and stored as sidecar files in the user cache directory, under `snap-rs/pyramids/` (Linux `~/.cache/snap-rs/pyramids`, macOS `~/Library/Caches/snap-rs/pyramids`, Windows `%LOCALAPPDATA%\snap-rs\pyramids`). They are keyed by file path, size and modification time; the folder can be deleted at any time and is rebuilt on demand.
 
 ### WSL2
 

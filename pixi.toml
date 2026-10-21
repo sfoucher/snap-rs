@@ -9,7 +9,7 @@ platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
 gdal = ">=3.8,<3.10"
 libgdal = ">=3.8,<3.10"
 proj = ">=9.4"
-rust = ">=1.80"
+rust = ">=1.82" # Option::is_none_or
 pkg-config = "*"
 # proj-sys runs bindgen at build time
 clang = "*"
@@ -28,11 +28,12 @@ PROJ_DATA = "$CONDA_PREFIX/share/proj"
 
 [target.linux-64.activation.env]
 LD_LIBRARY_PATH = "$CONDA_PREFIX/lib"
+
+[target.win-64.activation.env]
 # GDAL_HOME is deliberately unset: gdal-sys only accepts lib\gdal_i.lib there and conda ships
 # lib\gdal.lib. GDAL_LIB_DIR makes gdal-sys link gdal.lib only; without it pkg-config emits
 # gdal.pc's private libs (curl.lib, ssh2.lib) and the link fails with LNK1181. Library\bin is
 # put on PATH by pixi activation. ci/pkgconfig-win shadows conda's broken libcurl.pc (-lcurl vs libcurl.lib).
-[target.win-64.activation.env]
 GDAL_DATA = "%CONDA_PREFIX%\\Library\\share\\gdal"
 PROJ_DATA = "%CONDA_PREFIX%\\Library\\share\\proj"
 GDAL_LIB_DIR = "%CONDA_PREFIX%\\Library\\lib"

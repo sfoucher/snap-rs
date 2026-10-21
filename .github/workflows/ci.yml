@@ -26,7 +26,6 @@ jobs:
       - run: cargo test --workspace
 
   windows:
-    # Unverified: GDAL/PROJ come from the pixi env (conda-forge), found via pkg-config.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
