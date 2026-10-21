@@ -9,7 +9,7 @@ use crate::panels::mask_manager::mask_manager_ui;
 use crate::panels::metadata::metadata_ui;
 use crate::panels::pixel_info::{pixel_info_at, pixel_info_ui, request_hover_tiles};
 use crate::view::{canvas_ui, GpuState, Stretch, ViewSources, ViewState};
-use egui_dock::{DockArea, DockState, NodeIndex, SurfaceIndex};
+use egui_dock::{DockArea, DockState, Node, NodeIndex, SurfaceIndex, TabIndex};
 use snap_core::{
     compute_stats_coarsest, BandStats, DataType, Product, ProductId, TileCache, TileKey, TILE,
 };
@@ -336,34 +336,69 @@ fn hover_step(
     (Some(tile), prev != Some(tile))
 }
 
-/// Explorer left, empty centre, tool panels right. Returns the dock and the centre leaf.
-fn initial_dock() -> (DockState<Pane>, NodeIndex) {
+/// Explorer left, empty centre, tool panels right.
+fn initial_dock() -> DockState<Pane> {
     let mut dock = DockState::new(Vec::new());
     let tree = dock.main_surface_mut();
     let [centre, _] = tree.split_left(NodeIndex::root(), 0.2, vec![Pane::Explorer]);
-    let [centre, _] = tree.split_right(
+    tree.split_right(
         centre,
         0.75,
         vec![Pane::Color, Pane::PixelInfo, Pane::Metadata, Pane::Masks],
     );
-    (dock, centre)
+    dock
 }
 
-/// Opens a view beside the existing ones, else in the centre, whichever panel has focus.
-fn push_image_tab(dock: &mut DockState<Pane>, centre: NodeIndex, idx: usize) {
-    let home = dock
+/// Opens a view beside the existing ones, else in the empty centre leaf, whichever panel has focus.
+fn push_image_tab(dock: &mut DockState<Pane>, idx: usize) {
+    let main = SurfaceIndex::main();
+    let beside_image = dock
         .iter_all_tabs()
         .find(|(_, t)| matches!(t, Pane::Image(_)))
-        .map_or((SurfaceIndex::main(), centre), |(at, _)| at);
-    dock.set_focused_node_and_surface(home);
+        .map(|(at, _)| at);
+    let empty_leaf = || {
+        dock[main]
+            .iter()
+            .position(|n| matches!(n, Node::Leaf { tabs, .. } if tabs.is_empty()))
+            .map(|i| (main, NodeIndex(i)))
+    };
+    // ponytail: with no empty leaf (the user closed the centre tab) falls back to the focused leaf.
+    if let Some(home) = beside_image.or_else(empty_leaf) {
+        dock.set_focused_node_and_surface(home);
+    }
     dock.push_to_focused_leaf(Pane::Image(idx));
+}
+
+/// Renumbers image tabs through `remap` and drops those it maps to `None`.
+/// Leaves stay even when emptied: `retain_tabs` would collapse them and mangle the layout.
+fn close_image_tabs(dock: &mut DockState<Pane>, remap: impl Fn(usize) -> Option<usize>) {
+    for (_, node) in dock.iter_all_nodes_mut() {
+        let Some(tabs) = node.tabs_mut() else {
+            continue;
+        };
+        let gone: Vec<usize> = tabs
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(k, t)| match t {
+                Pane::Image(i) => match remap(*i) {
+                    Some(n) => {
+                        *i = n;
+                        None
+                    }
+                    None => Some(k),
+                },
+                _ => None,
+            })
+            .collect();
+        for k in gone.into_iter().rev() {
+            node.remove_tab(TabIndex(k));
+        }
+    }
 }
 
 pub struct SnapApp {
     state: AppState,
     dock: DockState<Pane>,
-    /// The central panel, where image views open.
-    centre: NodeIndex,
     toasts: Vec<(String, Instant)>,
     show_about: bool,
     rgb_dialog: Option<ProductId>,
@@ -457,11 +492,10 @@ impl SnapApp {
             let gpu = GpuState::new(rs);
             rs.renderer.write().callback_resources.insert(gpu);
         }
-        let (dock, centre) = initial_dock();
+        let dock = initial_dock();
         Self {
             state: AppState::new(),
             dock,
-            centre,
             toasts: Vec::new(),
             show_about: false,
             rgb_dialog: None,
@@ -488,15 +522,7 @@ impl SnapApp {
                 gpu.evict_product(id);
             }
         }
-        self.dock.retain_tabs(|t| {
-            if let Pane::Image(i) = t {
-                match remap.get(*i).copied().flatten() {
-                    Some(n) => *i = n,
-                    None => return false,
-                }
-            }
-            true
-        });
+        close_image_tabs(&mut self.dock, |i| remap.get(i).copied().flatten());
     }
 
     fn handle(&mut self, action: ExplorerAction) {
@@ -506,7 +532,7 @@ impl SnapApp {
                     return;
                 };
                 self.state.active_view = Some(idx);
-                push_image_tab(&mut self.dock, self.centre, idx);
+                push_image_tab(&mut self.dock, idx);
             }
             ExplorerAction::OpenRgb(product) => self.rgb_dialog = Some(product),
             ExplorerAction::BandMaths(product) => self.band_maths = Some(product),
@@ -692,7 +718,7 @@ impl eframe::App for SnapApp {
             if let Some(bands) = rgb_dialog(ctx, &mut self.state, pid, &mut open) {
                 if let Some(idx) = self.state.open_rgb_view(pid, bands) {
                     self.state.active_view = Some(idx);
-                    push_image_tab(&mut self.dock, self.centre, idx);
+                    push_image_tab(&mut self.dock, idx);
                 }
             }
             if !open {
@@ -786,16 +812,42 @@ mod tests {
 
     #[test]
     fn image_tabs_open_in_centre_whatever_has_focus() {
-        let (mut dock, centre) = initial_dock();
+        let mut dock = initial_dock();
         let (_, explorer, _) = dock.find_tab(&Pane::Explorer).unwrap();
         dock.set_focused_node_and_surface((SurfaceIndex::main(), explorer));
-        push_image_tab(&mut dock, centre, 0);
-        assert_eq!(dock.find_tab(&Pane::Image(0)).unwrap().1, centre);
-        // A later view joins the first one even if focus moved to a tool panel.
+        push_image_tab(&mut dock, 0);
+        let centre = dock.find_tab(&Pane::Image(0)).unwrap().1;
         let (_, tools, _) = dock.find_tab(&Pane::Color).unwrap();
+        assert!(
+            centre != explorer && centre != tools,
+            "view not in the centre"
+        );
+        // A later view joins the first one even if focus moved to a tool panel.
         dock.set_focused_node_and_surface((SurfaceIndex::main(), tools));
-        push_image_tab(&mut dock, centre, 1);
+        push_image_tab(&mut dock, 1);
         assert_eq!(dock.find_tab(&Pane::Image(1)).unwrap().1, centre);
+    }
+
+    #[test]
+    fn closing_last_view_keeps_the_other_panels() {
+        let mut dock = initial_dock();
+        push_image_tab(&mut dock, 0);
+        close_image_tabs(&mut dock, |_| None);
+        for p in [
+            Pane::Explorer,
+            Pane::Color,
+            Pane::PixelInfo,
+            Pane::Metadata,
+            Pane::Masks,
+        ] {
+            assert!(dock.find_tab(&p).is_some(), "a panel was lost");
+        }
+        // The centre is still there for the next view.
+        push_image_tab(&mut dock, 1);
+        let at = dock.find_tab(&Pane::Image(1)).unwrap().1;
+        for p in [Pane::Explorer, Pane::Color] {
+            assert_ne!(at, dock.find_tab(&p).unwrap().1);
+        }
     }
 
     #[test]
