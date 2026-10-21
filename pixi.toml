@@ -31,13 +31,13 @@ LD_LIBRARY_PATH = "$CONDA_PREFIX/lib"
 # GDAL_HOME is deliberately unset: gdal-sys only accepts lib\gdal_i.lib there and conda ships
 # lib\gdal.lib. GDAL_LIB_DIR makes gdal-sys link gdal.lib only; without it pkg-config emits
 # gdal.pc's private libs (curl.lib, ssh2.lib) and the link fails with LNK1181. Library\bin is
-# put on PATH by pixi activation.
+# put on PATH by pixi activation. ci/pkgconfig-win shadows conda's broken libcurl.pc (-lcurl vs libcurl.lib).
 [target.win-64.activation.env]
 GDAL_DATA = "%CONDA_PREFIX%\\Library\\share\\gdal"
 PROJ_DATA = "%CONDA_PREFIX%\\Library\\share\\proj"
 GDAL_LIB_DIR = "%CONDA_PREFIX%\\Library\\lib"
 GDAL_INCLUDE_DIR = "%CONDA_PREFIX%\\Library\\include"
-PKG_CONFIG_PATH = "%CONDA_PREFIX%\\Library\\lib\\pkgconfig"
+PKG_CONFIG_PATH = "%PIXI_PROJECT_ROOT%\\ci\\pkgconfig-win;%CONDA_PREFIX%\\Library\\lib\\pkgconfig"
 
 [target.osx-64.activation.env]
 DYLD_FALLBACK_LIBRARY_PATH = "$CONDA_PREFIX/lib"

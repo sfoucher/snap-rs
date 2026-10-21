@@ -1,0 +1,7 @@
+# Shadows conda-forge's win-64 libcurl.pc, which lists -lcurl/-lssh2 (files are libcurl.lib/libssh2.lib)
+# and breaks the proj-sys link (LNK1181). proj.dll already carries its curl dependency.
+Name: libcurl
+Description: shim, see ci/pkgconfig-win
+Version: 8.18.0
+Libs:
+Cflags:
