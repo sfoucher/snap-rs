@@ -1,6 +1,6 @@
 use crate::errors::{clear_gdal_error, init_error_handler, last_gdal_error, open_dataset};
 use crate::metadata::metadata_tree;
-use crate::source::{map_type, open_err};
+use crate::source::{map_type, open_err, SharedDs};
 use crate::GdalSource;
 use gdal::{Dataset, Metadata};
 use snap_core::{Band, Crs, CrsGeoCoding, GeoCoding, NoGeoCoding, Product, Pyramid, Scaling};
@@ -51,6 +51,7 @@ pub(crate) fn build_product(
     let mut p = Product::new(&name, product_type, w as u32, h as u32);
     p.file_path = Some(path.to_path_buf());
     let key = Pyramid::cache_key(path)?;
+    let shared = SharedDs::default();
     for i in 1..=ds.raster_count() {
         let b = ds.rasterband(i).map_err(|e| open_err(path, e))?;
         let bt = b.band_type();
@@ -68,7 +69,7 @@ pub(crate) fn build_product(
                 .join(format!("band_{i}"))
         });
         let source = Arc::new(Pyramid::new(
-            Arc::new(GdalSource::open(path, i)?),
+            Arc::new(GdalSource::open_shared(path, i, shared.clone())?),
             cache_dir,
             b.no_data_value(),
         ));

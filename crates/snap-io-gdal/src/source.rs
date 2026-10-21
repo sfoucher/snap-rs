@@ -5,7 +5,11 @@ use ndarray::Array2;
 use snap_core::{level_size, tile_rect, CoreError, DataType, RasterSource, Tile};
 use snap_io::IoError;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+
+/// Lazily opened dataset, shared by every band of a product. Pixel-interleaved files decode
+/// all bands per block, so one dataset per band would hold one block buffer per band.
+pub(crate) type SharedDs = Arc<Mutex<Option<Dataset>>>;
 
 pub struct GdalSource {
     path: PathBuf,
@@ -13,7 +17,7 @@ pub struct GdalSource {
     data_type: DataType,
     size: (u32, u32),
     overviews: u8,
-    ds: Mutex<Option<Dataset>>,
+    ds: SharedDs,
 }
 
 pub(crate) fn open_err(path: &Path, e: impl std::fmt::Display) -> IoError {
@@ -66,15 +70,19 @@ fn gdal_msg(e: gdal::errors::GdalError) -> String {
 impl GdalSource {
     /// `band` is 1-based. Reads metadata only; the dataset is reopened lazily by `read_tile`.
     pub fn open(path: &Path, band: usize) -> Result<Self, IoError> {
+        Self::open_shared(path, band, SharedDs::default())
+    }
+
+    pub(crate) fn open_shared(path: &Path, band: usize, ds: SharedDs) -> Result<Self, IoError> {
         init_error_handler();
-        let ds = open_dataset(path).map_err(|e| open_err(path, e))?;
-        if band == 0 || band > ds.raster_count() {
+        let probe = open_dataset(path).map_err(|e| open_err(path, e))?;
+        if band == 0 || band > probe.raster_count() {
             return Err(IoError::Open {
                 path: path.to_path_buf(),
-                msg: format!("band {band} out of range (1..={})", ds.raster_count()),
+                msg: format!("band {band} out of range (1..={})", probe.raster_count()),
             });
         }
-        let b = ds.rasterband(band).map_err(|e| open_err(path, e))?;
+        let b = probe.rasterband(band).map_err(|e| open_err(path, e))?;
         let bt = b.band_type();
         let data_type = map_type(bt).ok_or_else(|| IoError::Open {
             path: path.to_path_buf(),
@@ -103,7 +111,7 @@ impl GdalSource {
             data_type,
             size: (w as u32, h as u32),
             overviews,
-            ds: Mutex::new(None),
+            ds,
         })
     }
 }
@@ -183,6 +191,22 @@ mod tests {
         s.read_tile(0, 0, 0).unwrap();
         assert!(s.ds.lock().unwrap().is_some());
         drop(s);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn bands_share_one_dataset() {
+        let dir = fixtures::temp_dir("shared");
+        let f = fixtures::make_fixture(&dir, "a.tif", 600, 600, DataType::U8, 2, false, None, None);
+        let ds = SharedDs::default();
+        let a = GdalSource::open_shared(&f.path, 1, ds.clone()).unwrap();
+        let b = GdalSource::open_shared(&f.path, 2, ds).unwrap();
+        a.read_tile(0, 0, 0).unwrap();
+        assert!(
+            b.ds.lock().unwrap().is_some(),
+            "band 2 must reuse band 1's dataset"
+        );
+        drop((a, b));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
