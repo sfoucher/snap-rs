@@ -1,8 +1,11 @@
 mod fixtures;
 use fixtures::*;
 use gdal::Dataset;
-use snap_core::{DataType, Product, Rect, TileCache, TileKey};
-use snap_io::{Compression, Registry, SubsetRegion, WriteOpts};
+use snap_core::{
+    Band, CoreError, DataType, MemorySource, Product, RasterSource, Rect, Scaling, Tile, TileCache,
+    TileKey,
+};
+use snap_io::{Compression, ProductWriter, Registry, SubsetRegion, WriteOpts};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -239,5 +242,96 @@ fn cog_and_compression_reopen() {
     drop(back);
     drop(src);
     drop(cache);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+fn mem_band(name: &str, no_data: Option<f64>, source: Arc<dyn RasterSource>) -> Band {
+    let (width, height) = source.size();
+    Band {
+        name: name.into(),
+        data_type: source.data_type(),
+        width,
+        height,
+        no_data,
+        scaling: Scaling {
+            factor: 1.0,
+            offset: 0.0,
+            log10: false,
+        },
+        unit: None,
+        valid_pixel_expr: None,
+        description: None,
+        source,
+        stats: Default::default(),
+    }
+}
+
+struct Broken;
+
+impl RasterSource for Broken {
+    fn data_type(&self) -> DataType {
+        DataType::F32
+    }
+    fn size(&self) -> (u32, u32) {
+        (600, 600)
+    }
+    fn levels(&self) -> u8 {
+        1
+    }
+    fn read_tile(&self, _: u8, tx: u32, _: u32) -> Result<Tile, CoreError> {
+        if tx == 0 {
+            Ok(Tile::F32(ndarray::Array2::zeros((512, 512))))
+        } else {
+            Err(CoreError::Other("disk on fire".into()))
+        }
+    }
+}
+
+#[test]
+fn failed_export_keeps_existing_target() {
+    let dir = temp_dir("wfail");
+    let out = dir.join("keep.tif");
+    std::fs::write(&out, b"precious").unwrap();
+    let mut p = Product::new("p", "t", 600, 600);
+    p.add_band(mem_band("b", None, Arc::new(Broken))).unwrap();
+    let cache = TileCache::new(64 << 20).0;
+    for cog in [false, true] {
+        let opts = WriteOpts {
+            cog,
+            ..Default::default()
+        };
+        assert!(snap_io_gdal::GeoTiffWriter
+            .write(&p, &out, &opts, &cache)
+            .is_err());
+        assert_eq!(std::fs::read(&out).unwrap(), b"precious");
+    }
+    let left: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+    assert_eq!(left.len(), 1, "temp files left behind");
+    drop(cache);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn mixed_nodata_bands_rejected() {
+    let dir = temp_dir("wnd");
+    let src = || -> Arc<dyn RasterSource> {
+        Arc::new(MemorySource::new(ndarray::Array2::<f32>::zeros((4, 4))))
+    };
+    let cache = TileCache::new(64 << 20).0;
+    for (a, b) in [(Some(0.0), Some(1.0)), (Some(0.0), None)] {
+        let mut p = Product::new("p", "t", 4, 4);
+        p.add_band(mem_band("a", a, src())).unwrap();
+        p.add_band(mem_band("b", b, src())).unwrap();
+        match snap_io_gdal::GeoTiffWriter.write(
+            &p,
+            &dir.join("x.tif"),
+            &WriteOpts::default(),
+            &cache,
+        ) {
+            Err(snap_io::IoError::Write(m)) => assert!(m.contains("different no-data"), "{m}"),
+            _ => panic!("expected a no-data mismatch error"),
+        }
+    }
+    assert!(!dir.join("x.tif").exists());
     std::fs::remove_dir_all(dir).unwrap();
 }

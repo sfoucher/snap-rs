@@ -190,6 +190,13 @@ impl ProductWriter for GeoTiffWriter {
         if bands.is_empty() {
             return Err(IoError::Write("no bands to write".into()));
         }
+        // GTiff stores one nodata for all bands; NaN-safe comparison via bits.
+        let nd = bands[0].no_data.map(f64::to_bits);
+        if bands.iter().any(|b| b.no_data.map(f64::to_bits) != nd) {
+            return Err(IoError::Write(
+                "bands have different no-data values; export them separately".into(),
+            ));
+        }
         let plan = Plan {
             product,
             bands,
@@ -197,14 +204,16 @@ impl ProductWriter for GeoTiffWriter {
             cache,
         };
         let comp = compress_name(opts.compression);
-        // COG is produced from a plain tiled temp file; the COG driver builds its own overviews.
-        let tmp: PathBuf = if opts.cog {
+        // Write beside the target and rename on success, so a failed export never
+        // clobbers an existing file. COG is copied from the plain tiled temp file
+        // (the COG driver builds its own overviews) into a second temp.
+        let sibling = |suffix: &str| -> PathBuf {
             let mut s = path.as_os_str().to_owned();
-            s.push(".tmp.tif");
+            s.push(suffix);
             s.into()
-        } else {
-            path.to_path_buf()
         };
+        let tmp = sibling(".tmp.tif");
+        let cog_tmp = sibling(".cog.tmp.tif");
         let co = options(&[
             ("TILED", "YES"),
             ("BLOCKXSIZE", "512"),
@@ -232,7 +241,9 @@ impl ProductWriter for GeoTiffWriter {
                 ])?;
                 let drv = DriverManager::get_driver_by_name("COG").map_err(gerr)?;
                 clear_gdal_error();
-                ds.create_copy(&drv, path, &cog_opts).map_err(gerr)?;
+                drop(ds.create_copy(&drv, &cog_tmp, &cog_opts).map_err(gerr)?);
+                drop(ds);
+                std::fs::rename(&cog_tmp, path).map_err(|e| IoError::Write(e.to_string()))?;
             } else {
                 let n = Pyramid::needed_levels(rect.w, rect.h);
                 let factors: Vec<i32> = (1..n).map(|l| 1 << l).collect();
@@ -240,12 +251,13 @@ impl ProductWriter for GeoTiffWriter {
                     clear_gdal_error();
                     ds.build_overviews("AVERAGE", &factors, &[]).map_err(gerr)?;
                 }
+                drop(ds); // flush and close before the rename
+                std::fs::rename(&tmp, path).map_err(|e| IoError::Write(e.to_string()))?;
             }
             Ok(())
         })();
-        if opts.cog {
-            let _ = std::fs::remove_file(&tmp);
-        }
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&cog_tmp);
         result
     }
 }
