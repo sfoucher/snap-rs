@@ -4,7 +4,7 @@ mod gpu;
 pub use canvas::canvas_ui;
 pub use gpu::GpuState;
 
-use snap_core::{level_size, tile_rect, DataType, ProductId, Rect, TILE};
+use snap_core::{level_size, tile_rect, ColorTable, DataType, ProductId, Rect, TILE};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stretch {
@@ -37,6 +37,8 @@ impl Stretch {
 pub struct Palette {
     pub name: String,
     pub stops: Vec<(f32, [u8; 3])>,
+    /// Class colours by pixel value, for paletted rasters: `to_lut` returns these as they are.
+    pub exact: Option<Box<[[u8; 4]; 256]>>,
 }
 
 impl Default for Palette {
@@ -44,12 +46,42 @@ impl Default for Palette {
         Palette {
             name: "Grey".into(),
             stops: vec![(0.0, [0, 0, 0]), (1.0, [255, 255, 255])],
+            exact: None,
         }
     }
 }
 
 impl Palette {
+    /// One colour per pixel value; values past the table are opaque black. Render it with the
+    /// stretch 0..255, gamma 1, so that value i reads LUT entry i.
+    pub fn categorical(table: &ColorTable) -> Self {
+        let mut lut = [[0, 0, 0, 255]; 256];
+        for (out, c) in lut.iter_mut().zip(&table.entries) {
+            *out = *c;
+        }
+        Palette {
+            name: "Classes".into(),
+            exact: Some(Box::new(lut)),
+            ..Palette::default()
+        }
+    }
+
+    /// (value, colour) of the classes worth listing: visible and not black.
+    /// ponytail: opaque black is read as "unused", GDAL pads GeoTIFF tables with it; a real
+    /// black class is not listed.
+    pub fn classes(&self) -> Vec<(usize, [u8; 3])> {
+        self.exact.as_ref().map_or_else(Vec::new, |lut| {
+            (0..256)
+                .filter(|&i| lut[i][3] > 0 && lut[i][..3] != [0, 0, 0])
+                .map(|i| (i, [lut[i][0], lut[i][1], lut[i][2]]))
+                .collect()
+        })
+    }
+
     pub fn to_lut(&self) -> [[u8; 4]; 256] {
+        if let Some(lut) = &self.exact {
+            return **lut;
+        }
         let mut lut = [[0, 0, 0, 255]; 256];
         for (i, out) in lut.iter_mut().enumerate() {
             let t = i as f32 / 255.0;
@@ -195,6 +227,26 @@ mod tests {
         let vp = ERect::from_min_max(pos2(0.0, 0.0), pos2(200.0, 100.0));
         let tiles = visible_tiles(&v, vp, 1000, 700, 0);
         assert!(tiles.contains(&(1, 1, r(512, 512, 488, 188))), "{tiles:?}");
+    }
+
+    #[test]
+    fn class_palette_maps_each_value_to_its_colour() {
+        let ct = ColorTable {
+            entries: vec![
+                [0, 0, 0, 0],
+                [255, 255, 0, 255],
+                [0, 100, 0, 255],
+                [0, 0, 0, 255],
+            ],
+        };
+        let p = Palette::categorical(&ct);
+        let lut = p.to_lut();
+        assert_eq!(lut[1], [255, 255, 0, 255]);
+        assert_eq!(lut[2], [0, 100, 0, 255]);
+        assert_eq!(lut[200], [0, 0, 0, 255], "past the table");
+        // nodata (alpha 0) and black padding are not listed
+        assert_eq!(p.classes(), vec![(1, [255, 255, 0]), (2, [0, 100, 0])]);
+        assert!(Palette::default().classes().is_empty());
     }
 
     #[test]

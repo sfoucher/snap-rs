@@ -49,6 +49,7 @@ pub fn parse_cpd(text: &str) -> Result<Palette, String> {
         .map(|(s, c)| (if hi > lo { (s - lo) / (hi - lo) } else { 0.0 }, c))
         .collect();
     Ok(Palette {
+        exact: None,
         name: "Custom".into(),
         stops,
     })
@@ -56,6 +57,7 @@ pub fn parse_cpd(text: &str) -> Result<Palette, String> {
 
 pub fn builtin_palettes() -> Vec<Palette> {
     let p = |name: &str, colors: &[[u8; 3]]| Palette {
+        exact: None,
         name: name.into(),
         stops: colors
             .iter()

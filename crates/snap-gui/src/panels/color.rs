@@ -132,12 +132,33 @@ fn channel_ui(
     ui.add(egui::Slider::new(&mut s.gamma, 0.1..=5.0).text("Gamma"));
 }
 
+/// Class colours of a paletted band: a stretch means nothing for classes, so show the key instead.
+fn class_legend(ui: &mut egui::Ui, classes: &[(usize, [u8; 3])]) {
+    ui.strong("Classes");
+    ui.label("Colours come from the file's colour table.");
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        for &(value, [r, g, b]) in classes {
+            ui.horizontal(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                ui.painter()
+                    .rect_filled(rect, 2.0, egui::Color32::from_rgb(r, g, b));
+                ui.label(value.to_string());
+            });
+        }
+    });
+}
+
 pub fn color_panel_ui(ui: &mut egui::Ui, state: &mut AppState) {
     let Some(vi) = state.active_view.filter(|&i| i < state.views.len()) else {
         ui.label("No active view");
         return;
     };
     let view = &state.views[vi];
+    if view.palette.exact.is_some() {
+        class_legend(ui, &view.palette.classes());
+        return;
+    }
     let names: Vec<String> = match &view.sources {
         ViewSources::Single(n) => vec![n.clone()],
         ViewSources::Rgb(n) => n.to_vec(),

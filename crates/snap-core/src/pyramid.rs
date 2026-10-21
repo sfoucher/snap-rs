@@ -12,6 +12,7 @@ pub struct Pyramid {
     levels: u8,
     cache_dir: Option<PathBuf>,
     no_data: Option<f64>,
+    nearest: bool,
 }
 
 /// Bump when the sidecar contents change meaning, so stale sidecars are ignored.
@@ -43,7 +44,15 @@ impl Pyramid {
             levels,
             cache_dir,
             no_data,
+            nearest: false,
         }
+    }
+
+    /// Coarse levels keep the top-left pixel of each 2x2 block instead of the mean:
+    /// class rasters must not invent values. Give such a pyramid its own cache dir.
+    pub fn nearest(mut self) -> Self {
+        self.nearest = true;
+        self
     }
 
     pub fn cache_key(path: &Path) -> Result<String, CoreError> {
@@ -74,7 +83,7 @@ impl Pyramid {
         for dy in 0..2u32 {
             for dx in 0..2u32 {
                 let child = match self.read_tile(level - 1, 2 * tx + dx, 2 * ty + dy) {
-                    Ok(t) => downsample2_nodata(&t, false, self.no_data),
+                    Ok(t) => downsample2_nodata(&t, self.nearest, self.no_data),
                     Err(CoreError::OutOfRange { .. }) => continue,
                     Err(e) => return Err(e),
                 };
@@ -391,6 +400,20 @@ mod tests {
         assert_eq!(t.get_f64(0, 0), 2.0);
         assert_eq!(t.get_f64(0, 1), -1.0);
         assert_eq!(t.get_f64(1, 1), 8.0);
+    }
+
+    #[test]
+    fn nearest_pyramid_keeps_class_values() {
+        // 2x2 blocks of [[1, 2], [3, 4]]: the mean (2.5) is no class, the top-left pixel is.
+        let a = Array2::from_shape_fn((2048, 2048), |(r, c)| (1 + c % 2 + 2 * (r % 2)) as f32);
+        let src = || Arc::new(MemorySource::new(a.clone()));
+        let mean = Pyramid::new(src(), None, None).read_tile(1, 0, 0).unwrap();
+        assert_eq!(mean.get_f64(0, 0), 2.5);
+        let nn = Pyramid::new(src(), None, None).nearest();
+        let t = nn.read_tile(1, 0, 0).unwrap();
+        assert!((0..512).all(|i| t.get_f64(i, i) == 1.0));
+        // level 2 comes from level 1, so it stays a class value too
+        assert_eq!(nn.read_tile(2, 0, 0).unwrap().get_f64(3, 5), 1.0);
     }
 
     #[test]

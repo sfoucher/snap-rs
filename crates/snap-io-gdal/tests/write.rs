@@ -263,6 +263,7 @@ fn mem_band(name: &str, no_data: Option<f64>, source: Arc<dyn RasterSource>) -> 
         description: None,
         source,
         stats: Default::default(),
+        color_table: None,
     }
 }
 

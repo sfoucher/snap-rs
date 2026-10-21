@@ -1,4 +1,5 @@
 mod cache;
+mod color_table;
 mod datatype;
 mod error;
 mod pyramid;
@@ -6,6 +7,7 @@ mod raster;
 mod tile;
 
 pub use cache::{TileCache, TileKey, TileState};
+pub use color_table::ColorTable;
 pub use datatype::{DataType, Scaling};
 pub use error::{CoreError, GeoError};
 pub use pyramid::{downsample2, downsample2_nodata, Pyramid};

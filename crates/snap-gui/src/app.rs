@@ -8,7 +8,7 @@ use crate::panels::color::{color_panel_ui, default_stretch};
 use crate::panels::mask_manager::mask_manager_ui;
 use crate::panels::metadata::metadata_ui;
 use crate::panels::pixel_info::{pixel_info_at, pixel_info_ui, request_hover_tiles};
-use crate::view::{canvas_ui, GpuState, Stretch, ViewSources, ViewState};
+use crate::view::{canvas_ui, GpuState, Palette, Stretch, ViewSources, ViewState};
 use egui_dock::{DockArea, DockState, Node, NodeIndex, SurfaceIndex, TabIndex};
 use snap_core::{
     compute_stats_coarsest, BandStats, DataType, Product, ProductId, TileCache, TileKey, TILE,
@@ -52,7 +52,7 @@ type StatsDone = (ProductId, String, Result<(), String>);
 /// Sets the default stretch on each channel of `view` showing `band` that is still on
 /// the data-type range. Called only when statistics arrive or a view opens.
 fn apply_default_stretch(view: &mut ViewState, band: &str, dt: DataType, stats: &BandStats) {
-    if stats.sample_count == 0 {
+    if stats.sample_count == 0 || view.palette.exact.is_some() {
         return;
     }
     let names = match &view.sources {
@@ -188,7 +188,12 @@ impl AppState {
             let p = self.product(pid)?.read().unwrap();
             let b = p.band(band)?;
             let title = format!("{}: {}", p.name, b.name);
-            ViewState::single(pid, band, b.data_type, (b.width, b.height), title)
+            let mut v = ViewState::single(pid, band, b.data_type, (b.width, b.height), title);
+            if let Some(ct) = &b.color_table {
+                // exact class colours: the 0..255 window already in the view, never auto-stretched
+                v.palette = Palette::categorical(ct);
+            }
+            v
         };
         if let Some((dt, st)) = self.band_stats(pid, band) {
             apply_default_stretch(&mut view, band, dt, &st);
@@ -962,6 +967,44 @@ mod tests {
         v.stretch[0] = user.clone();
         apply_default_stretch(&mut v, "b", DataType::U8, &stats(4));
         assert_eq!(v.stretch[0], user);
+    }
+
+    #[test]
+    fn class_band_opens_with_its_colours_and_keeps_them_when_stats_arrive() {
+        snap_io_gdal::init_error_handler();
+        let dir = fixtures::temp_dir("gui-classes");
+        let fx = fixtures::make_fixture(&dir, "a.tif", 8, 8, DataType::U8, 1, false, None, None);
+        let mut st = AppState::new();
+        let id = st.open_path(&fx.path).unwrap();
+        let band = {
+            let mut p = st.product(id).unwrap().write().unwrap();
+            p.bands[0].color_table = Some(snap_core::ColorTable {
+                entries: vec![[0, 0, 0, 0], [255, 255, 0, 255]],
+            });
+            p.bands[0].name.clone()
+        };
+        let a = st.open_view(id, &band).unwrap();
+        assert_eq!(st.views[a].palette.classes(), vec![(1, [255, 255, 0])]);
+        assert_eq!(st.views[a].stretch[0], Stretch::for_type(DataType::U8));
+        // statistics arriving later must not replace the 0..255 window with a 2-98 % one
+        let stats = BandStats {
+            min: 1.0,
+            max: 40.0,
+            mean: 10.0,
+            histogram: vec![4; 512],
+            bin_width: 39.0 / 512.0,
+            sample_count: 2048,
+            level: 0,
+        };
+        st.product(id).unwrap().read().unwrap().bands[0]
+            .stats
+            .set(stats)
+            .unwrap();
+        st.apply_default(id, &band);
+        assert_eq!(st.views[a].stretch[0], Stretch::for_type(DataType::U8));
+        st.close_product(id);
+        drop(st);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

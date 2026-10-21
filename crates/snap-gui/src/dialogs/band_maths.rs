@@ -71,6 +71,7 @@ pub fn apply_band_maths(state: &mut AppState, req: &BandMathsRequest) -> Result<
         description: req.description.clone(),
         source: Arc::new(source),
         stats: OnceLock::new(),
+        color_table: None,
     })
     .map_err(|e| err(e.to_string(), whole))
 }

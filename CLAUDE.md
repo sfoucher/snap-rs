@@ -14,6 +14,7 @@ Rust reimplementation of the concepts behind ESA SNAP: product/band model, tiled
 - No new dependency unless the plan names it. No abstraction "for later". Exception: `embed-resource`, a Windows-only build dependency of `snap-gui` that puts the product name and version in the exe.
 - One GDAL `Dataset` per product, shared by all its bands (`SharedDs`). Pixel-interleaved GeoTIFFs decode every band per block, so a dataset per band ran a 158-band file out of memory.
 - Band names: GDAL description, else SNAP's DIMAP header (TIFF tag 65000, `dimap_names.rs`), else `band_N`.
+- Paletted Byte bands (GDAL `PaletteIndex`) carry a `ColorTable`; they are categorical. Their pyramid uses `Pyramid::nearest()` (never means) with its own `band_N_nn` sidecar dir, and the view renders the exact class colours (`Palette::categorical`, stretch 0..255, never auto-stretched) with a class legend instead of a histogram.
 - Dock layout (`snap-gui/src/app.rs`): open image views with `push_image_tab` and drop them with `close_image_tabs`. Never `retain_tabs` for image tabs: it collapses emptied leaves and mangles the layout. The tab's X button collapses the centre leaf too, which `push_image_tab` rebuilds.
 - Follow the plan's exact names and signatures; if one can't work, say so in the commit message and the task report instead of renaming silently.
 

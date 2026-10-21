@@ -1,5 +1,6 @@
 use crate::{
-    BandStats, CoreError, DataType, GeoCoding, MetadataElement, NoGeoCoding, RasterSource, Scaling,
+    BandStats, ColorTable, CoreError, DataType, GeoCoding, MetadataElement, NoGeoCoding,
+    RasterSource, Scaling,
 };
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,6 +24,8 @@ pub struct Band {
     pub description: Option<String>,
     pub source: Arc<dyn RasterSource>,
     pub stats: OnceLock<BandStats>,
+    /// Class colours when the band is a paletted (categorical) raster.
+    pub color_table: Option<ColorTable>,
 }
 
 #[derive(Clone)]
@@ -106,6 +109,7 @@ mod tests {
             description: None,
             source: Arc::new(MemorySource::new(ndarray::Array2::<f32>::zeros((1, 1)))),
             stats: OnceLock::new(),
+            color_table: None,
         }
     }
 

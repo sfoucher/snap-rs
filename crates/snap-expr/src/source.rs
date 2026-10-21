@@ -145,6 +145,7 @@ mod tests {
             description: None,
             source: Arc::new(MemorySource::new(data)),
             stats: OnceLock::new(),
+            color_table: None,
         }
     }
 

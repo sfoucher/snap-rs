@@ -2,8 +2,12 @@ use crate::errors::{clear_gdal_error, init_error_handler, last_gdal_error, open_
 use crate::metadata::metadata_tree;
 use crate::source::{map_type, open_err, SharedDs};
 use crate::GdalSource;
+use gdal::raster::ColorInterpretation;
 use gdal::{Dataset, Metadata};
-use snap_core::{Band, Crs, CrsGeoCoding, GeoCoding, NoGeoCoding, Product, Pyramid, Scaling};
+use snap_core::{
+    Band, ColorTable, Crs, CrsGeoCoding, DataType, GeoCoding, NoGeoCoding, Product, Pyramid,
+    Scaling,
+};
 use snap_io::{IoError, Probe, ProductReader};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -60,6 +64,7 @@ pub(crate) fn build_product(
             path: path.to_path_buf(),
             msg: format!("unsupported data type {}", bt.name()),
         })?;
+        let color_table = class_colors(&b, data_type);
         let mut desc = b.description().unwrap_or_default();
         let mut name = desc.clone();
         if let Some((n, d)) = dimap.get(&(i - 1)).filter(|_| name.is_empty()) {
@@ -72,13 +77,21 @@ pub(crate) fn build_product(
             d.join("snap-rs")
                 .join("pyramids")
                 .join(&key)
-                .join(format!("band_{i}"))
+                // class levels are not means, so they must not share sidecars with a mean pyramid
+                .join(format!(
+                    "band_{i}{}",
+                    if color_table.is_some() { "_nn" } else { "" }
+                ))
         });
-        let source = Arc::new(Pyramid::new(
+        let mut pyramid = Pyramid::new(
             Arc::new(GdalSource::open_shared(path, i, shared.clone())?),
             cache_dir,
             b.no_data_value(),
-        ));
+        );
+        if color_table.is_some() {
+            pyramid = pyramid.nearest();
+        }
+        let source = Arc::new(pyramid);
         p.add_band(Band {
             name: if name.is_empty() {
                 format!("band_{i}")
@@ -99,11 +112,28 @@ pub(crate) fn build_product(
             description: (!desc.is_empty()).then_some(desc),
             source,
             stats: OnceLock::new(),
+            color_table,
         })?;
     }
     p.metadata = metadata_tree(ds);
     p.geocoding = geocoding_from(ds)?;
     Ok(p)
+}
+
+/// Class colours of a paletted Byte band; other types are not rendered through a table.
+fn class_colors(b: &gdal::raster::RasterBand, data_type: DataType) -> Option<ColorTable> {
+    if data_type != DataType::U8 || b.color_interpretation() != ColorInterpretation::PaletteIndex {
+        return None;
+    }
+    let t = b.color_table()?;
+    let entries = (0..t.entry_count().min(256))
+        .map(|i| {
+            t.entry_as_rgb(i).map_or([0, 0, 0, 255], |e| {
+                [e.r as u8, e.g as u8, e.b as u8, e.a as u8]
+            })
+        })
+        .collect();
+    Some(ColorTable { entries })
 }
 
 pub(crate) fn geocoding_from(ds: &Dataset) -> Result<Arc<dyn GeoCoding>, IoError> {
