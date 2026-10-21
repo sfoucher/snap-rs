@@ -2,7 +2,7 @@ use crate::errors::{clear_gdal_error, init_error_handler, last_gdal_error, open_
 use gdal::raster::{GdalDataType, GdalType};
 use gdal::Dataset;
 use ndarray::Array2;
-use snap_core::{tile_rect, CoreError, DataType, RasterSource, Tile};
+use snap_core::{level_size, tile_rect, CoreError, DataType, RasterSource, Tile};
 use snap_io::IoError;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -81,7 +81,22 @@ impl GdalSource {
             msg: format!("unsupported data type {}", bt.name()),
         })?;
         let (w, h) = b.size();
-        let overviews = b.overview_count().map_err(|e| open_err(path, e))?.max(0) as u8;
+        // Only leading overviews whose size matches level_size (factors 2, 4, 8...) are levels;
+        // other factors (3, ...) would break the pyramid's tile geometry.
+        let n = b
+            .overview_count()
+            .map_err(|e| open_err(path, e))?
+            .clamp(0, 254);
+        let (w32, h32) = (w as u32, h as u32);
+        let mut overviews = 0u8;
+        for i in 0..n {
+            let o = b.overview(i as usize).map_err(|e| open_err(path, e))?;
+            let (ow, oh) = o.size();
+            if (ow as u32, oh as u32) != level_size(w32, h32, overviews + 1) {
+                break;
+            }
+            overviews += 1;
+        }
         Ok(Self {
             path: path.to_path_buf(),
             band,

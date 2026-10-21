@@ -72,6 +72,26 @@ fn overview_levels_reported() {
 }
 
 #[test]
+fn non_power_of_two_overviews_are_ignored() {
+    let dir = temp_dir("ovr3");
+    for (name, factors, levels) in [("a.tif", &[3][..], 1), ("b.tif", &[2, 8][..], 2)] {
+        let f = make_fixture(&dir, name, 1000, 700, DataType::U16, 1, false, None, None);
+        let mut ds = gdal::Dataset::open(&f.path).unwrap();
+        ds.build_overviews("NEAREST", factors, &[]).unwrap();
+        drop(ds);
+        let s = GdalSource::open(&f.path, 1).unwrap();
+        assert_eq!(s.levels(), levels, "{factors:?}");
+        let t = s.read_tile(0, 1, 1).unwrap();
+        assert_eq!(t.get_f64(0, 1), 513.0);
+        if levels == 2 {
+            assert_eq!(s.read_tile(1, 0, 0).unwrap().shape(), (350, 500));
+        }
+        assert!(s.read_tile(levels, 0, 0).is_err());
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn open_missing_file_is_ioerror_not_stderr() {
     match GdalSource::open(std::path::Path::new("nope.tif"), 1) {
         Err(IoError::Open { msg, .. }) => assert!(!msg.is_empty()),
