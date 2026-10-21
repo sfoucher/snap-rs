@@ -76,7 +76,9 @@ impl CrsGeoCoding {
             b / det,
         ];
         let mk = |from: &str, to: &str| {
-            Proj::new_known_crs(from, to, None)
+            // proj 0.27 panics ("PROJ did not supply an error") for some CRSs, e.g. LOCAL_CS.
+            std::panic::catch_unwind(|| Proj::new_known_crs(from, to, None))
+                .map_err(|_| GeoError::Proj(format!("PROJ cannot transform {from} to {to}")))?
                 .map(|p| Mutex::new(SendProj(p)))
                 .map_err(|e| GeoError::Proj(e.to_string()))
         };
@@ -136,6 +138,17 @@ mod tests {
                 name: "WGS 84 / UTM zone 18N".into(),
             },
         )
+    }
+
+    #[test]
+    fn untransformable_crs_is_error_not_panic() {
+        let crs = Crs {
+            wkt: r#"LOCAL_CS["arbitrary",UNIT["metre",1],AXIS["X",EAST],AXIS["Y",NORTH]]"#.into(),
+            epsg: None,
+            name: "arbitrary".into(),
+        };
+        let r = CrsGeoCoding::new([0.0, 1.0, 0.0, 0.0, 0.0, -1.0], crs);
+        assert!(matches!(r, Err(GeoError::Proj(_))));
     }
 
     #[test]

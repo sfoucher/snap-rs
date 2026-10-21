@@ -118,3 +118,27 @@ fn projection_without_geotransform_uses_nogeocoding() {
     drop(p);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn untransformable_crs_opens_without_geocoding() {
+    let dir = temp_dir("gt-local");
+    let f = make_fixture(&dir, "a.tif", 20, 10, DataType::U8, 1, false, None, None);
+    let mut ds = gdal::Dataset::open_ex(
+        &f.path,
+        gdal::DatasetOptions {
+            open_flags: gdal::GdalOpenFlags::GDAL_OF_UPDATE,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    ds.set_geo_transform(&[0.0, 1.0, 0.0, 0.0, 0.0, -1.0])
+        .unwrap();
+    ds.set_projection(r#"LOCAL_CS["arbitrary",UNIT["metre",1],AXIS["X",EAST],AXIS["Y",NORTH]]"#)
+        .unwrap();
+    drop(ds);
+    let p = GeoTiffReader.read(&f.path).unwrap();
+    assert!(p.geocoding.crs().is_none());
+    assert!(p.geocoding.pixel_to_geo(0.5, 0.5).is_none());
+    drop(p);
+    std::fs::remove_dir_all(dir).unwrap();
+}

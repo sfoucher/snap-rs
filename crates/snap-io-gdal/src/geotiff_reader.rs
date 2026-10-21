@@ -122,5 +122,12 @@ pub(crate) fn geocoding_from(ds: &Dataset) -> Result<Arc<dyn GeoCoding>, IoError
             .flatten()
     });
     let name = srs.and_then(|s| s.name().ok()).unwrap_or_default();
-    Ok(Arc::new(CrsGeoCoding::new(gt, Crs { wkt, epsg, name })?))
+    // A CRS PROJ can't transform (or a singular transform) must not block opening (R18).
+    match CrsGeoCoding::new(gt, Crs { wkt, epsg, name }) {
+        Ok(g) => Ok(Arc::new(g)),
+        Err(e) => {
+            log::warn!("unusable geocoding, using NoGeoCoding: {e}");
+            Ok(Arc::new(NoGeoCoding))
+        }
+    }
 }
