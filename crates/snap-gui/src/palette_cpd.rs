@@ -19,7 +19,7 @@ pub fn parse_cpd(text: &str) -> Result<Palette, String> {
     if n < 2 {
         return Err(format!("numPoints must be at least 2, got {n}"));
     }
-    let mut pts = Vec::with_capacity(n);
+    let mut pts = Vec::new(); // n is untrusted: no up-front allocation
     for k in 0..n {
         let c = props
             .get(format!("color{k}").as_str())
@@ -94,6 +94,12 @@ pub fn builtin_palettes() -> Vec<Palette> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_cpd_huge_num_points_is_error_not_abort() {
+        let r = parse_cpd("numPoints=1000000000000\ncolor0=0,0,0\nsample0=1\n");
+        assert!(r.is_err());
+    }
 
     #[test]
     fn parse_cpd_two_points() {
