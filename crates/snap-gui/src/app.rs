@@ -1,5 +1,7 @@
 use crate::dialogs::band_maths::{apply_band_maths, band_maths_dialog, preset_as_mask};
-use crate::dialogs::export::{export_dialog, run_export};
+use crate::dialogs::export::{
+    check_export_target, export_dialog, run_export, take_authorised_overwrite,
+};
 use crate::dialogs::rgb::rgb_dialog;
 use crate::explorer::{explorer_ui, ExplorerAction};
 use crate::panels::color::{color_panel_ui, default_stretch};
@@ -651,7 +653,12 @@ impl eframe::App for SnapApp {
             let mut open = self.state.product(pid).is_some();
             if let Some(req) = export_dialog(ctx, &mut self.state, pid, &mut open) {
                 let path = req.path.clone();
-                self.exports.push((run_export(&self.state, req), path));
+                let authorised = take_authorised_overwrite(ctx);
+                let in_flight: Vec<PathBuf> = self.exports.iter().map(|e| e.1.clone()).collect();
+                match check_export_target(&path, path.exists(), authorised.as_deref(), &in_flight) {
+                    Ok(()) => self.exports.push((run_export(&self.state, req), path)),
+                    Err(e) => self.state.errors.push(format!("Export refused: {e}")),
+                }
             }
             if !open {
                 self.export = None;

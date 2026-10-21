@@ -44,6 +44,35 @@ fn overwrite_ok(
     !exists || ticked_for == Some(target)
 }
 
+fn authorised_id() -> egui::Id {
+    egui::Id::new("export-overwrite-authorised")
+}
+
+/// Target the dialog's overwrite tick authorised for the request it just returned.
+pub(crate) fn take_authorised_overwrite(ctx: &egui::Context) -> Option<PathBuf> {
+    ctx.data_mut(|d| d.remove_temp::<PathBuf>(authorised_id()))
+}
+
+/// Last check right before an export starts: the target may have appeared since the
+/// dialog looked, or another running export may be writing it.
+pub(crate) fn check_export_target(
+    target: &std::path::Path,
+    exists: bool,
+    authorised: Option<&std::path::Path>,
+    in_flight: &[PathBuf],
+) -> Result<(), String> {
+    if in_flight.iter().any(|p| p == target) {
+        return Err(format!("{} is already being exported", target.display()));
+    }
+    if !overwrite_ok(exists, authorised, target) {
+        return Err(format!(
+            "{} already exists; tick \"Overwrite existing file\" to replace it",
+            target.display()
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Region {
     Full,
@@ -61,8 +90,8 @@ struct Form {
     path: String,
     /// Target the overwrite tick was given for; it authorises that path only.
     overwrite_for: Option<PathBuf>,
-    /// (path, is source, exists), refreshed only when the path changes.
-    status: Option<(PathBuf, bool, bool)>,
+    /// (path, is source), refreshed only when the path changes; existence is checked every frame.
+    status: Option<(PathBuf, bool)>,
 }
 
 const COMPRESSIONS: [(Compression, &str); 4] = [
@@ -130,10 +159,10 @@ pub fn export_dialog(
     };
     let out = PathBuf::from(f.path.trim());
     if f.status.as_ref().map(|s| &s.0) != Some(&out) {
-        let is_src = is_source(&out, file.as_deref());
-        f.status = Some((out.clone(), is_src, !is_src && out.exists()));
+        f.status = Some((out.clone(), is_source(&out, file.as_deref())));
     }
-    let (_, is_src, exists) = f.status.clone().unwrap();
+    let is_src = f.status.as_ref().is_some_and(|s| s.1);
+    let exists = !is_src && out.exists();
     let valid = rect.w > 0
         && rect.h > 0
         && !f.path.trim().is_empty()
@@ -213,6 +242,9 @@ pub fn export_dialog(
     if ok || cancel {
         *open = false;
         ctx.data_mut(|d| d.remove::<Form>(id));
+        if ok && valid && exists {
+            ctx.data_mut(|d| d.insert_temp(authorised_id(), out.clone()));
+        }
         return (ok && valid).then(|| ExportRequest {
             product,
             path: PathBuf::from(f.path.trim()),
@@ -354,5 +386,19 @@ mod tests {
         assert!(!overwrite_ok(true, Some(a), b));
         assert!(!overwrite_ok(true, None, b));
         assert!(overwrite_ok(false, None, b));
+    }
+
+    #[test]
+    fn export_target_rechecked_before_start() {
+        use std::path::Path;
+        let (a, b) = (Path::new("a.tif"), Path::new("b.tif"));
+        assert!(check_export_target(a, false, None, &[]).is_ok());
+        // appeared after the dialog looked: no tick for it
+        assert!(check_export_target(a, true, None, &[]).is_err());
+        assert!(check_export_target(a, true, Some(b), &[]).is_err());
+        assert!(check_export_target(a, true, Some(a), &[]).is_ok());
+        // a running export already writes it
+        assert!(check_export_target(a, false, None, &[a.into()]).is_err());
+        assert!(check_export_target(a, false, None, &[b.into()]).is_ok());
     }
 }
