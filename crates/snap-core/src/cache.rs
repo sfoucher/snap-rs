@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -37,7 +38,10 @@ struct Inner {
 struct State {
     tiles: LruCache<TileKey, Arc<Tile>>,
     used_bytes: usize,
-    pending: HashSet<TileKey>,
+    /// In-flight loads, by generation: a completion is kept only if its
+    /// generation is still the pending one (not evicted and re-requested).
+    pending: HashMap<TileKey, u64>,
+    next_gen: u64,
     failures: HashMap<TileKey, String>,
 }
 
@@ -68,7 +72,8 @@ impl TileCache {
             state: Mutex::new(State {
                 tiles: LruCache::unbounded(),
                 used_bytes: 0,
-                pending: HashSet::new(),
+                pending: HashMap::new(),
+                next_gen: 0,
                 failures: HashMap::new(),
             }),
             budget_bytes,
@@ -81,7 +86,7 @@ impl TileCache {
     }
 
     pub fn get(&self, key: &TileKey, source: &Arc<dyn RasterSource>) -> TileState {
-        {
+        let gen = {
             let mut st = self.inner.state.lock().unwrap();
             if let Some(t) = st.tiles.get(key) {
                 return TileState::Ready(t.clone());
@@ -89,16 +94,32 @@ impl TileCache {
             if let Some(msg) = st.failures.get(key) {
                 return TileState::Failed(msg.clone());
             }
-            if !st.pending.insert(key.clone()) {
+            if st.pending.contains_key(key) {
                 return TileState::Pending;
             }
-        }
+            st.next_gen += 1;
+            let gen = st.next_gen;
+            st.pending.insert(key.clone(), gen);
+            gen
+        };
         let (inner, source, key) = (self.inner.clone(), source.clone(), key.clone());
         self.pool.spawn(move || {
-            let result = source.read_tile(key.level, key.tx, key.ty);
+            // A panicking reader must not abort the process (rayon aborts on worker panics).
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                source.read_tile(key.level, key.tx, key.ty)
+            }))
+            .unwrap_or_else(|p| {
+                let msg = p
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| p.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                Err(CoreError::Other(format!("internal error: {msg}")))
+            });
             let mut st = inner.state.lock().unwrap();
-            // Evicted while loading: the result belongs to a gone band, drop it.
-            if st.pending.remove(&key) {
+            // Evicted (and maybe re-requested) while loading: the result is stale, drop it.
+            if st.pending.get(&key) == Some(&gen) {
+                st.pending.remove(&key);
                 match result {
                     Ok(tile) => inner.insert_locked(&mut st, key.clone(), Arc::new(tile)),
                     Err(e) => {
@@ -156,7 +177,7 @@ impl TileCache {
             }
         }
         st.failures.retain(|k, _| !doomed(k));
-        st.pending.retain(|k| !doomed(k));
+        st.pending.retain(|k, _| !doomed(k));
     }
 
     pub fn used_bytes(&self) -> usize {
@@ -264,5 +285,85 @@ mod tests {
             assert!(matches!(cache.get(&key(0), &src), TileState::Failed(_)));
         }
         assert_eq!(failing.0.load(Ordering::SeqCst), 1);
+    }
+
+    struct Panicking;
+
+    impl RasterSource for Panicking {
+        fn data_type(&self) -> DataType {
+            DataType::F32
+        }
+        fn size(&self) -> (u32, u32) {
+            (512, 512)
+        }
+        fn levels(&self) -> u8 {
+            1
+        }
+        fn read_tile(&self, _: u8, _: u32, _: u32) -> Result<Tile, CoreError> {
+            panic!("reader blew up")
+        }
+    }
+
+    #[test]
+    fn panicking_read_becomes_failure() {
+        let (cache, rx) = TileCache::new(1 << 30);
+        let src: Arc<dyn RasterSource> = Arc::new(Panicking);
+        assert!(matches!(cache.get(&key(0), &src), TileState::Pending));
+        rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        match cache.get(&key(0), &src) {
+            TileState::Failed(m) => assert!(m.contains("internal error"), "{m}"),
+            _ => panic!("expected Failed"),
+        }
+        assert!(cache.inner.state.lock().unwrap().pending.is_empty());
+    }
+
+    /// Call i blocks until gate i is released, then returns a 1x1 tile of value i.
+    struct Gated {
+        calls: AtomicUsize,
+        gates: [Mutex<Receiver<()>>; 2],
+    }
+
+    impl RasterSource for Gated {
+        fn data_type(&self) -> DataType {
+            DataType::F32
+        }
+        fn size(&self) -> (u32, u32) {
+            (1, 1)
+        }
+        fn levels(&self) -> u8 {
+            1
+        }
+        fn read_tile(&self, _: u8, _: u32, _: u32) -> Result<Tile, CoreError> {
+            let i = self.calls.fetch_add(1, Ordering::SeqCst);
+            self.gates[i].lock().unwrap().recv().unwrap();
+            Ok(Tile::F32(Array2::from_elem((1, 1), i as f32)))
+        }
+    }
+
+    #[test]
+    fn stale_load_after_evict_and_rerequest_is_dropped() {
+        let (cache, rx) = TileCache::new(1 << 30);
+        let (g0, r0) = channel();
+        let (g1, r1) = channel();
+        let gated = Arc::new(Gated {
+            calls: AtomicUsize::new(0),
+            gates: [Mutex::new(r0), Mutex::new(r1)],
+        });
+        let src: Arc<dyn RasterSource> = gated.clone();
+        cache.get(&key(0), &src);
+        let t0 = std::time::Instant::now();
+        while gated.calls.load(Ordering::SeqCst) == 0 {
+            assert!(t0.elapsed() < Duration::from_secs(2));
+            std::thread::yield_now();
+        }
+        cache.evict_band(ProductId(1), "b");
+        assert!(matches!(cache.get(&key(0), &src), TileState::Pending));
+        g0.send(()).unwrap();
+        rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(cache.peek(&key(0)).is_none(), "stale load was cached");
+        g1.send(()).unwrap();
+        rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let t = cache.peek(&key(0)).expect("new load cached");
+        assert_eq!(t.get_f64(0, 0), 1.0);
     }
 }
