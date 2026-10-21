@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Built by ci/package-windows.ps1, which passes Version and StageDir. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!-- Never change UpgradeCode: it is how a new version finds and replaces the old one. -->
+  <Package Name="snap-rs" Manufacturer="snap-rs" Version="$(Version)"
+           UpgradeCode="7DE5A1A6-882B-4AFE-B0AA-4D5BF672A838" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of snap-rs is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="snap-rs">
+        <Component Id="MainExe">
+          <File Id="SnapGuiExe" Source="$(StageDir)\snap-gui.exe" KeyPath="yes">
+            <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="snap-rs"
+                      WorkingDirectory="INSTALLFOLDER" Advertise="yes" />
+          </File>
+        </Component>
+        <!-- DLLs and share\{gdal,proj}, harvested from the staging folder at build time. -->
+        <Files Include="$(StageDir)\**">
+          <Exclude Files="$(StageDir)\snap-gui.exe" />
+        </Files>
+      </Directory>
+    </StandardDirectory>
+  </Package>
+</Wix>
