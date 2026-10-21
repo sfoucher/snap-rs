@@ -22,11 +22,12 @@ Rust reimplementation of the concepts behind ESA SNAP: product/band model, tiled
 - Develop in WSL2 or Linux; check the GUI natively on Windows/macOS.
 - `pixi install` provides GDAL/PROJ. Run `pixi run test` (= `cargo test --workspace`).
 - Before claiming a task done: `cargo fmt --check && cargo clippy --workspace -D warnings && cargo test --workspace` (= `pixi run check`).
+- Tests that make GDAL files must drop the product/dataset before `remove_dir_all`: Windows cannot delete a file GDAL still holds open. GDAL pads a GeoTIFF colour table to 256 entries (unused ones opaque black).
 - Windows: build from a "Developer PowerShell for VS 2022", or run `vcvars64.bat` first. A plain shell fails with `LNK1181: cannot open input file 'kernel32.lib'`. `pixi run` drops backslashes, so write paths with `/` (`pixi run target/release/snap-gui.exe`).
 
 ## Release (Windows)
 - License: MIT. The README has the SignPath "Code signing policy" section; keep it true.
-- Tag `vX.Y.Z` must equal the `snap-gui` crate version, or the Release workflow fails its first step.
+- To release: bump `version` in `crates/snap-gui/Cargo.toml`, commit and push, then `git tag vX.Y.Z && git push origin vX.Y.Z`. The tag must equal that version, or the Release workflow fails its first step. Never move a published tag; bump instead.
 - Pushing the tag runs `.github/workflows/release.yml`: `ci/package-windows.ps1` stages the exe, its DLLs (found from the PE import tables) and `share/{gdal,proj}`, then writes `dist/snap-rs-X.Y.Z-win64.zip` and `dist/snap-rs-X.Y.Z.msi` (`installer/snap-rs.wxs`), and `gh release create` publishes both. The release is public.
 - WiX must be 5.0.2: v7 refuses to run until you accept a paid-support EULA.
 - The exe and MSI are not signed yet. Signing order once it exists: sign the exe, build the MSI, sign the MSI.
