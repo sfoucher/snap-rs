@@ -61,7 +61,7 @@ pub fn apply_band_maths(state: &mut AppState, req: &BandMathsRequest) -> Result<
     let (width, height) = source.size();
     p.add_band(Band {
         name: req.name.clone(),
-        data_type: DataType::F32,
+        data_type: source.data_type(),
         width,
         height,
         no_data: None,
@@ -350,6 +350,19 @@ mod tests {
         let t = b.source.read_tile(0, 0, 0).unwrap();
         // band_1 = 0, band_2 = 100 at (0,0) (R17)
         assert_eq!(t.get_f64(0, 0), 1.0);
+        drop(p);
+        drop(st);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn virtual_band_type_follows_expression() {
+        let (mut st, id, dir) = setup("bm-type");
+        apply_band_maths(&mut st, &req(id, "flag", "band_1 > 5", false)).unwrap();
+        let p = st.product(id).unwrap().read().unwrap();
+        let b = p.band("flag").unwrap();
+        assert_eq!(b.data_type, b.source.data_type());
+        assert_eq!(b.data_type, DataType::U8);
         drop(p);
         drop(st);
         std::fs::remove_dir_all(dir).ok();
