@@ -92,6 +92,29 @@ fn non_power_of_two_overviews_are_ignored() {
 }
 
 #[test]
+fn vector_file_is_not_a_product() {
+    let dir = temp_dir("vec");
+    let path = dir.join("pts.geojson");
+    std::fs::write(
+        &path,
+        r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#,
+    )
+    .unwrap();
+    assert!(
+        gdal::Dataset::open(&path).is_ok(),
+        "GDAL opens it as vector"
+    );
+    let mut reg = snap_io::Registry::default();
+    snap_io_gdal::register(&mut reg);
+    match reg.open(&path) {
+        Err(IoError::NoReader(_)) | Err(IoError::Open { .. }) => {}
+        Err(e) => panic!("unexpected error {e}"),
+        Ok(p) => panic!("vector opened as product with {} bands", p.bands.len()),
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn open_missing_file_is_ioerror_not_stderr() {
     match GdalSource::open(std::path::Path::new("nope.tif"), 1) {
         Err(IoError::Open { msg, .. }) => assert!(!msg.is_empty()),

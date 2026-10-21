@@ -26,14 +26,16 @@ pub(crate) fn last_gdal_error() -> String {
     LAST.with(|l| std::mem::take(&mut *l.borrow_mut()))
 }
 
-/// Open read-only with VERBOSE_ERROR so failures raise a CPLError (the default flags stay silent).
+/// Open read-only, rasters only (vector files must not open as empty products), with VERBOSE_ERROR so failures raise a CPLError (the default flags stay silent).
 pub(crate) fn open_dataset(path: &std::path::Path) -> gdal::errors::Result<gdal::Dataset> {
     use gdal::{DatasetOptions, GdalOpenFlags};
     clear_gdal_error();
     gdal::Dataset::open_ex(
         path,
         DatasetOptions {
-            open_flags: GdalOpenFlags::GDAL_OF_READONLY | GdalOpenFlags::GDAL_OF_VERBOSE_ERROR,
+            open_flags: GdalOpenFlags::GDAL_OF_READONLY
+                | GdalOpenFlags::GDAL_OF_RASTER
+                | GdalOpenFlags::GDAL_OF_VERBOSE_ERROR,
             ..Default::default()
         },
     )
