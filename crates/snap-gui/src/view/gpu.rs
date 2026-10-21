@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Textures kept on the GPU; least-recently-drawn ones beyond this are dropped.
-const MAX_TEXTURES: usize = 512;
+const MAX_TEXTURES: usize = 1536;
 const QUAD_BYTES: u64 = 6 * 4 * 4; // 6 vertices of (x, y, u, v) f32
 
 pub struct TileTexture {

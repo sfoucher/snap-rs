@@ -6,7 +6,13 @@ use egui::{pos2, Color32, Key, Modifiers, Pos2, Rect as ERect, Sense, Stroke};
 use snap_core::{RasterSource, TileKey, TileState, TILE};
 use std::sync::Arc;
 
-const ZOOM_STEP: f64 = 1.25;
+/// ln(1.25) / 40: one wheel notch (egui: 40 points per line) zooms x1.25;
+/// trackpads send many small smoothed deltas and zoom proportionally.
+const ZOOM_PER_POINT: f64 = 0.005_578;
+
+fn zoom_factor(scroll_y: f32) -> f64 {
+    (ZOOM_PER_POINT * scroll_y as f64).exp()
+}
 const HATCH_SPACING: f32 = 8.0;
 
 pub struct CanvasEvent {
@@ -39,15 +45,10 @@ fn handle_input(ui: &egui::Ui, resp: &egui::Response, view: &mut ViewState, w: u
     let Some(pos) = resp.hover_pos() else {
         return;
     };
-    let scroll = ui.input(|i| i.raw_scroll_delta.y);
+    let scroll = ui.input(|i| i.smooth_scroll_delta.y);
     if scroll != 0.0 {
         let anchor = to_image(view, rect, pos);
-        let f = if scroll > 0.0 {
-            ZOOM_STEP
-        } else {
-            1.0 / ZOOM_STEP
-        };
-        view.zoom = (view.zoom * f).clamp(1e-4, 1e3);
+        view.zoom = (view.zoom * zoom_factor(scroll)).clamp(1e-4, 1e3);
         let c = rect.center();
         view.center = (
             anchor.0 - (pos.x - c.x) as f64 / view.zoom,
@@ -253,4 +254,17 @@ pub fn canvas_ui(ui: &mut egui::Ui, state: &mut AppState, view_idx: usize) -> Ca
         }
     }
     event
+}
+
+#[cfg(test)]
+mod tests {
+    use super::zoom_factor;
+
+    #[test]
+    fn wheel_notch_zooms_by_a_quarter() {
+        assert!((zoom_factor(40.0) - 1.25).abs() < 1e-3);
+        assert!((zoom_factor(-40.0) * 1.25 - 1.0).abs() < 1e-3);
+        // a notch split into smoothed frames compounds to the same zoom
+        assert!((zoom_factor(10.0).powi(4) - zoom_factor(40.0)).abs() < 1e-9);
+    }
 }
