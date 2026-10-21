@@ -351,6 +351,7 @@ mod tests {
         // band_1 = 0, band_2 = 100 at (0,0) (R17)
         assert_eq!(t.get_f64(0, 0), 1.0);
         drop(p);
+        drop(st);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -363,6 +364,7 @@ mod tests {
         assert_eq!(p.masks[0].source.data_type(), DataType::U8);
         assert_eq!(p.masks[0].expr, "band_1 > 500");
         drop(p);
+        drop(st);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -382,6 +384,7 @@ mod tests {
             "{e:?}"
         );
         assert_eq!(st.product(id).unwrap().read().unwrap().bands.len(), n);
+        drop(st);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -398,6 +401,7 @@ mod tests {
         let p = st.product(id).unwrap().read().unwrap();
         assert_eq!((p.bands.len(), p.masks.len()), (2, 1));
         drop(p);
+        drop(st);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -423,6 +427,7 @@ mod tests {
         st.remove_mask(id, "m");
         assert!(st.cache.peek(&key).is_none());
         assert!(st.product(id).unwrap().read().unwrap().masks.is_empty());
+        drop(st);
         std::fs::remove_dir_all(dir).ok();
     }
 

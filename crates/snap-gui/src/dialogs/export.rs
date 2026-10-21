@@ -320,6 +320,8 @@ mod tests {
         run_export(&st, req).join().unwrap().unwrap();
         let p = st.registry.open(&out).unwrap();
         assert_eq!((p.width, p.height, p.bands.len()), (20, 10, 1));
+        drop(p);
+        drop(st);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -340,6 +342,7 @@ mod tests {
             opts: WriteOpts::default(),
         };
         assert!(run_export(&st, req).join().unwrap().is_err());
+        drop(st);
         std::fs::remove_dir_all(dir).ok();
     }
 

@@ -725,6 +725,7 @@ mod tests {
         st.close_product(id);
         assert_eq!(st.products.len(), 0);
         assert_eq!(st.cache.used_bytes(), 0);
+        drop(st);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -806,6 +807,7 @@ mod tests {
         assert_ne!(st.views[b].stretch[0], Stretch::for_type(DataType::U8));
         st.close_product(id);
         assert!(st.stats_started.is_empty());
+        drop(st);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -854,6 +856,7 @@ mod tests {
         assert_ne!(v.stretch[2], u8r);
         assert_eq!(v.title, format!("a: RGB({},{},{})", rgb[0], rgb[1], rgb[2]));
         st.close_product(id);
+        drop(st);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -883,6 +886,7 @@ mod tests {
         assert_eq!(st.products.len(), 1);
         assert_eq!(st.errors.len(), 1);
         assert!(st.errors[0].starts_with("nope.tif: "));
+        drop(st);
         std::fs::remove_dir_all(dir).ok();
     }
 }

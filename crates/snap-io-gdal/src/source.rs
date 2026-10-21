@@ -167,6 +167,7 @@ mod tests {
         assert!(s.ds.lock().unwrap().is_none());
         s.read_tile(0, 0, 0).unwrap();
         assert!(s.ds.lock().unwrap().is_some());
+        drop(s);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

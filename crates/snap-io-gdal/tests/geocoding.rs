@@ -32,6 +32,7 @@ fn geotiff_product_fields() {
         assert_eq!((b.width, b.height), (300, 200));
     }
     assert!(p.metadata.get_path("IMAGE_STRUCTURE/INTERLEAVE").is_some());
+    drop(p);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -66,6 +67,7 @@ fn geocoding_matches_gdaltransform() {
     assert!((a.lon - (-72.4322371741319)).abs() < 1e-6);
     assert!((a.lat - 45.3901490956265).abs() < 1e-6);
     assert_eq!(p.geocoding.crs().unwrap().epsg, Some(32618));
+    drop(p);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -75,6 +77,7 @@ fn geotiff_without_georef_uses_nogeocoding() {
     let f = make_fixture(&dir, "a.tif", 64, 64, DataType::U8, 1, false, None, None);
     let p = GeoTiffReader.read(&f.path).unwrap();
     assert!(p.geocoding.pixel_to_geo(0.0, 0.0).is_none());
+    drop(p);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -95,6 +98,7 @@ fn registry_picks_geotiff_over_generic() {
     register(&mut reg);
     assert_eq!(reg.open(&f.path).unwrap().product_type, "GeoTIFF");
     assert_eq!(reg.open(&png).unwrap().product_type, "GDAL:PNG");
+    drop(src);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -111,5 +115,6 @@ fn projection_without_geotransform_uses_nogeocoding() {
     drop(ds);
     let p = GeoTiffReader.read(&path).unwrap();
     assert!(p.geocoding.pixel_to_geo(0.0, 0.0).is_none());
+    drop(p);
     std::fs::remove_dir_all(dir).unwrap();
 }

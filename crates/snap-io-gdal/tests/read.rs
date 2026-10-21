@@ -40,6 +40,7 @@ fn tile_matches_gdal_read() {
         .read_tile(0, 0, 1)
         .unwrap();
     assert_eq!(t2.get_f64(0, 0), 612.0);
+    drop(s);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -66,6 +67,7 @@ fn overview_levels_reported() {
     assert_eq!((w, h), (500, 350));
     let t = sa.read_tile(1, 0, 0).unwrap();
     assert_eq!(t.shape(), (h as usize, w as usize));
+    drop(sa);
     std::fs::remove_dir_all(dir).unwrap();
 }
 

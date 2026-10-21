@@ -71,6 +71,10 @@ fn write_read_roundtrip() {
     assert_eq!(gt_of(&out), f.gt);
     let ds = Dataset::open(&out).unwrap();
     assert_eq!(ds.rasterband(1).unwrap().overview_count().unwrap(), 1);
+    drop(ds);
+    drop(back);
+    drop(src);
+    drop(cache);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -103,6 +107,9 @@ fn subset_shifts_geotransform() {
         px(&cache, &back, 0, 599, 599),
         px(&cache, &src, 0, 699, 649)
     );
+    drop(back);
+    drop(src);
+    drop(cache);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -134,6 +141,9 @@ fn subset_band_selection_and_order() {
     );
     assert_eq!(a, b3);
     assert_ne!(a, b1);
+    drop(back);
+    drop(src);
+    drop(cache);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -181,6 +191,8 @@ fn invalid_subset_rejected() {
             Err(snap_io::IoError::Write(_))
         ));
     }
+    drop(src);
+    drop(cache);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -223,5 +235,9 @@ fn cog_and_compression_reopen() {
         "{} vs {mean}",
         ov[0]
     );
+    drop(ds);
+    drop(back);
+    drop(src);
+    drop(cache);
     std::fs::remove_dir_all(dir).unwrap();
 }

@@ -220,6 +220,7 @@ mod tests {
             Some((700000.0 + 600.5 * 10.0, 5030000.0 - 600.5 * 10.0))
         );
         assert!(i.crs_name.is_some());
+        drop(st);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -231,6 +232,7 @@ mod tests {
         assert!(pixel_info_at(&st, id, 64.0, 0.0).is_none());
         assert!(pixel_info_at(&st, id, 0.0, 32.0).is_none());
         assert!(pixel_info_at(&st, id, 63.9, 31.9).is_some());
+        drop(st);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -239,6 +241,7 @@ mod tests {
         let (st, id, dir) = open("pi-nogeo", 64, 32, None);
         let i = pixel_info_at(&st, id, 3.0, 4.0).unwrap();
         assert!(i.geo.is_none() && i.crs_xy.is_none() && i.crs_name.is_none());
+        drop(st);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -275,6 +278,7 @@ mod tests {
                 ("m_cold".to_string(), false)
             ]
         );
+        drop(st);
         std::fs::remove_dir_all(dir).ok();
     }
 
