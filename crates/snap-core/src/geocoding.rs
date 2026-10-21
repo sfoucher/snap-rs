@@ -47,6 +47,8 @@ use std::sync::Mutex;
 
 // SAFETY: each Proj owns its own PROJ context and is only reached through the Mutex,
 // so it is never used from two threads at once; moving it between threads is sound.
+// Caveat: Proj's Drop also calls the global proj_cleanup(), which may run while another
+// thread uses its own context; this relies on PROJ >= 9 guarding that shared state internally.
 struct SendProj(Proj);
 unsafe impl Send for SendProj {}
 
