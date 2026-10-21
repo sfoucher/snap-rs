@@ -1,4 +1,4 @@
-# Builds dist\snap-rs-<version>.msi from the pixi environment.
+# Builds dist\snap-rs-<version>.msi and dist\snap-rs-<version>-win64.zip from the pixi environment.
 #   powershell -File ci\package-windows.ps1
 #   ci\package-windows.ps1 -SkipBuild
 # Needs the WiX CLI on PATH. Use v5: dotnet tool install --global wix --version 5.0.2
@@ -8,10 +8,10 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
 
+$version = (Select-String -Path 'crates\snap-gui\Cargo.toml' -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
 $envDir = Join-Path $root '.pixi\envs\default'
 $bin = Join-Path $envDir 'Library\bin'
-$stage = Join-Path $root 'dist\app'
-$version = (Select-String -Path 'crates\snap-gui\Cargo.toml' -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+$stage = Join-Path $root "dist\snap-rs-$version"
 
 if (-not $SkipBuild) {
     pixi run cargo build --release -p snap-gui
@@ -83,6 +83,13 @@ New-Item -ItemType Directory $share | Out-Null
 foreach ($d in 'gdal', 'proj') { Copy-Item (Join-Path $envDir "Library\share\$d") $share -Recurse }
 
 "staged $((Get-ChildItem $stage -Recurse -File).Count) files, $([Math]::Round((Get-ChildItem $stage -Recurse -File | Measure-Object Length -Sum).Sum / 1MB)) MB"
+
+# Portable build: the staged folder as-is, inside a snap-rs-<version> folder.
+# ZipFile writes a real deflate zip, unlike PATH's `tar` (may be GNU tar). Windows PowerShell 5.1 stores backslash entry names, pwsh 7 (CI) forward slashes; both extract fine on Windows.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip = Join-Path $root "dist\snap-rs-$version-win64.zip"
+[IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip, [IO.Compression.CompressionLevel]::Optimal, $true)
+"built $zip"
 
 if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
     throw 'wix not found. Install it with: dotnet tool install --global wix --version 5.0.2'

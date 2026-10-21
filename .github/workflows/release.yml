@@ -29,10 +29,12 @@ jobs:
       - run: ./ci/package-windows.ps1
       - uses: actions/upload-artifact@v4
         with:
-          name: snap-rs-msi
-          path: dist/*.msi
+          name: snap-rs-windows
+          path: |
+            dist/*.msi
+            dist/*.zip
           if-no-files-found: error
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/*.msi --title "${{ github.ref_name }}" --generate-notes
+        run: gh release create "${{ github.ref_name }}" dist/*.msi dist/*.zip --title "${{ github.ref_name }}" --generate-notes
