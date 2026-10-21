@@ -47,3 +47,17 @@ The Wayland socket lives under WSLg, so set `XDG_RUNTIME_DIR=/mnt/wslg/runtime-d
 ## Contributing
 
 Test-driven: failing test, minimal code, pass, commit. One crate per concern; dependency direction is `snap-gui -> snap-io-gdal -> snap-io -> snap-core` and `snap-expr -> snap-core`. See [CLAUDE.md](CLAUDE.md) for the full rules. Before a PR, run `pixi run check` (= `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`).
+
+## License
+
+MIT, see [LICENSE](LICENSE).
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+Windows installers are built from the tagged source by the [Release workflow](.github/workflows/release.yml) on GitHub Actions. Every release is approved by hand before it is signed.
+
+**Team roles.** Samuel Foucher ([@sfoucher](https://github.com/sfoucher)) is the sole committer, reviewer and approver. Pull requests from anyone else are reviewed by the maintainer before they are merged.
+
+**Privacy.** This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
