@@ -362,10 +362,18 @@ fn push_image_tab(dock: &mut DockState<Pane>, idx: usize) {
             .position(|n| matches!(n, Node::Leaf { tabs, .. } if tabs.is_empty()))
             .map(|i| (main, NodeIndex(i)))
     };
-    // ponytail: with no empty leaf (the user closed the centre tab) falls back to the focused leaf.
     if let Some(home) = beside_image.or_else(empty_leaf) {
         dock.set_focused_node_and_surface(home);
+    } else if let Some(tools) = [Pane::Color, Pane::PixelInfo, Pane::Metadata, Pane::Masks]
+        .iter()
+        .find_map(|p| dock.find_tab(p).filter(|(s, ..)| s.is_main()))
+    {
+        // The centre collapsed when its last tab was closed: rebuild it left of the tool panels.
+        let [_, centre] = dock[main].split_left(tools.1, 0.75, vec![Pane::Image(idx)]);
+        dock.set_focused_node_and_surface((main, centre));
+        return;
     }
+    // ponytail: with the tool panels gone too, falls back to the focused leaf.
     dock.push_to_focused_leaf(Pane::Image(idx));
 }
 
@@ -826,6 +834,29 @@ mod tests {
         dock.set_focused_node_and_surface((SurfaceIndex::main(), tools));
         push_image_tab(&mut dock, 1);
         assert_eq!(dock.find_tab(&Pane::Image(1)).unwrap().1, centre);
+    }
+
+    #[test]
+    fn reopening_after_the_tab_x_button_rebuilds_the_centre() {
+        let mut dock = initial_dock();
+        push_image_tab(&mut dock, 0);
+        // The tab's X button goes through remove_tab, which collapses the emptied centre leaf.
+        let at = dock.find_tab(&Pane::Image(0)).unwrap();
+        dock.remove_tab(at);
+        push_image_tab(&mut dock, 1);
+        let img = dock.find_tab(&Pane::Image(1)).unwrap().1;
+        for p in [Pane::Explorer, Pane::Color] {
+            assert_ne!(img, dock.find_tab(&p).unwrap().1, "view shares a panel");
+        }
+        for p in [
+            Pane::Explorer,
+            Pane::Color,
+            Pane::PixelInfo,
+            Pane::Metadata,
+            Pane::Masks,
+        ] {
+            assert!(dock.find_tab(&p).is_some(), "a panel was lost");
+        }
     }
 
     #[test]
