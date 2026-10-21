@@ -1,5 +1,6 @@
 use crate::app::AppState;
-use snap_core::{DataType, GeoPos, ProductId, TileKey, TILE};
+use snap_core::{DataType, GeoPos, Product, ProductId, RasterSource, TileKey, TILE};
+use std::sync::Arc;
 
 pub struct PixelInfo {
     pub image_x: u32,
@@ -13,6 +14,42 @@ pub struct PixelInfo {
     // Private, parallel to `bands`: unit, and whether the band does not cover this pixel.
     units: Vec<Option<String>>,
     out_of_band: Vec<bool>,
+    /// Parallel to `bands`: the tile is not cached because its load failed.
+    unavailable: Vec<bool>,
+}
+
+/// Level-0 tiles holding pixel (x, y): one per band covering it and one per mask.
+pub(crate) fn hover_requests(p: &Product, x: f64, y: f64) -> Vec<(TileKey, Arc<dyn RasterSource>)> {
+    if !(x >= 0.0 && y >= 0.0 && x < p.width as f64 && y < p.height as f64) {
+        return Vec::new();
+    }
+    let (ix, iy) = (x.floor() as u32, y.floor() as u32);
+    let key = |name: &str| TileKey {
+        product: p.id,
+        band: name.into(),
+        level: 0,
+        tx: ix / TILE,
+        ty: iy / TILE,
+    };
+    let bands = p
+        .bands
+        .iter()
+        .filter(|b| ix < b.width && iy < b.height)
+        .map(|b| (key(&b.name), b.source.clone()));
+    let masks = p.masks.iter().map(|m| (key(&m.name), m.source.clone()));
+    bands.chain(masks).collect()
+}
+
+/// Starts background loads (non-blocking, deduped by the cache) for the hovered pixel's
+/// tiles, so Pixel Info fills in for bands that are not on screen.
+pub(crate) fn request_hover_tiles(state: &AppState, product: ProductId, x: f64, y: f64) {
+    let Some(p) = state.product(product) else {
+        return;
+    };
+    let reqs = hover_requests(&p.read().unwrap(), x, y);
+    for (key, src) in reqs {
+        state.cache.get(&key, &src);
+    }
 }
 
 fn peek_value(state: &AppState, key: TileKey, ix: u32, iy: u32) -> Option<(DataType, f64)> {
@@ -42,6 +79,14 @@ pub fn pixel_info_at(state: &AppState, product: ProductId, x: f64, y: f64) -> Op
         .map(|b| ix >= b.width || iy >= b.height)
         .collect();
     let units = p.bands.iter().map(|b| b.unit.clone()).collect();
+    let unavailable = p
+        .bands
+        .iter()
+        .map(|b| {
+            let k = key(&b.name);
+            state.cache.peek(&k).is_none() && state.cache.is_failed(&k)
+        })
+        .collect();
     let bands = p
         .bands
         .iter()
@@ -90,7 +135,20 @@ pub fn pixel_info_at(state: &AppState, product: ProductId, x: f64, y: f64) -> Op
         masks,
         units,
         out_of_band,
+        unavailable,
     })
+}
+
+fn band_text(i: &PixelInfo, k: usize, v: Option<f64>) -> String {
+    match v {
+        _ if i.out_of_band[k] => "—".to_string(),
+        None if i.unavailable[k] => "unavailable".to_string(),
+        None => "loading…".to_string(),
+        Some(v) => match &i.units[k] {
+            Some(u) => format!("{} {u}", sig4(v)),
+            None => sig4(v),
+        },
+    }
 }
 
 /// 4 significant digits; scientific outside 1e-4..1e7.
@@ -150,15 +208,7 @@ pub fn pixel_info_ui(ui: &mut egui::Ui, info: Option<&PixelInfo>) {
     egui::Grid::new("pixel_bands").striped(true).show(ui, |ui| {
         for (k, (n, v)) in i.bands.iter().enumerate() {
             ui.label(n);
-            let text = match (v, i.out_of_band[k]) {
-                (_, true) => "—".to_string(),
-                (None, _) => "loading…".to_string(),
-                (Some(v), _) => match &i.units[k] {
-                    Some(u) => format!("{} {u}", sig4(*v)),
-                    None => sig4(*v),
-                },
-            };
-            ui.label(text);
+            ui.label(band_text(i, k, *v));
             ui.end_row();
         }
         for (n, on) in &i.masks {
@@ -278,6 +328,78 @@ mod tests {
                 ("m_cold".to_string(), false)
             ]
         );
+        drop(st);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn hover_requests_one_level0_tile_per_band_and_mask() {
+        use snap_core::{Mask, MemorySource};
+        let (st, id, dir) = open("pi-req", 1000, 700, None);
+        let src: Arc<dyn RasterSource> = Arc::new(MemorySource::new(
+            ndarray::Array2::<f32>::zeros((700, 1000)),
+        ));
+        st.product(id).unwrap().write().unwrap().masks.push(Mask {
+            name: "m".into(),
+            expr: String::new(),
+            color: [255, 0, 0, 255],
+            opacity: 0.5,
+            source: src,
+        });
+        let p = st.product(id).unwrap().read().unwrap();
+        let keys: Vec<TileKey> = hover_requests(&p, 600.5, 100.2)
+            .into_iter()
+            .map(|r| r.0)
+            .collect();
+        let k = |band: &str| TileKey {
+            product: id,
+            band: band.into(),
+            level: 0,
+            tx: 1,
+            ty: 0,
+        };
+        assert_eq!(keys, vec![k("band_1"), k("band_2"), k("m")]);
+        assert!(hover_requests(&p, 1000.0, 0.0).is_empty());
+        assert!(hover_requests(&p, -0.5, 0.0).is_empty());
+        drop(p);
+        drop(st);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn request_fills_value_and_failed_tile_is_unavailable() {
+        use snap_core::{CoreError, Tile};
+        struct Broken;
+        impl RasterSource for Broken {
+            fn data_type(&self) -> DataType {
+                DataType::F32
+            }
+            fn size(&self) -> (u32, u32) {
+                (1000, 700)
+            }
+            fn levels(&self) -> u8 {
+                1
+            }
+            fn read_tile(&self, _: u8, _: u32, _: u32) -> Result<Tile, CoreError> {
+                Err(CoreError::Other("gone".into()))
+            }
+        }
+        let (st, id, dir) = open("pi-fail", 1000, 700, None);
+        st.product(id).unwrap().write().unwrap().bands[1].source = Arc::new(Broken);
+        request_hover_tiles(&st, id, 600.0, 600.0);
+        for _ in 0..2 {
+            st.cache_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        }
+        let i = pixel_info_at(&st, id, 600.0, 600.0).unwrap();
+        assert_eq!(i.bands[0].1, Some(((600 * 1000 + 600) % 1000) as f64));
+        assert_eq!(band_text(&i, 0, i.bands[0].1), "600.0");
+        assert_eq!(i.bands[1].1, None);
+        assert_eq!(band_text(&i, 1, None), "unavailable");
+        // a tile that is merely not loaded yet still says loading
+        let j = pixel_info_at(&st, id, 10.0, 10.0).unwrap();
+        assert_eq!(band_text(&j, 0, j.bands[0].1), "loading…");
         drop(st);
         std::fs::remove_dir_all(dir).ok();
     }

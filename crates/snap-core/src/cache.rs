@@ -150,6 +150,11 @@ impl TileCache {
         Ok(tile)
     }
 
+    /// True when the last load of `key` failed (never starts a read).
+    pub fn is_failed(&self, key: &TileKey) -> bool {
+        self.inner.state.lock().unwrap().failures.contains_key(key)
+    }
+
     pub fn peek(&self, key: &TileKey) -> Option<Arc<Tile>> {
         self.inner.state.lock().unwrap().tiles.peek(key).cloned()
     }
@@ -281,6 +286,7 @@ mod tests {
         let src: Arc<dyn RasterSource> = failing.clone();
         assert!(matches!(cache.get(&key(0), &src), TileState::Pending));
         rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(cache.is_failed(&key(0)) && !cache.is_failed(&key(1)));
         for _ in 0..3 {
             assert!(matches!(cache.get(&key(0), &src), TileState::Failed(_)));
         }

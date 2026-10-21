@@ -7,11 +7,11 @@ use crate::explorer::{explorer_ui, ExplorerAction};
 use crate::panels::color::{color_panel_ui, default_stretch};
 use crate::panels::mask_manager::mask_manager_ui;
 use crate::panels::metadata::metadata_ui;
-use crate::panels::pixel_info::{pixel_info_at, pixel_info_ui};
+use crate::panels::pixel_info::{pixel_info_at, pixel_info_ui, request_hover_tiles};
 use crate::view::{canvas_ui, GpuState, Stretch, ViewSources, ViewState};
 use egui_dock::{DockArea, DockState, NodeIndex};
 use snap_core::{
-    compute_stats_coarsest, BandStats, DataType, Product, ProductId, TileCache, TileKey,
+    compute_stats_coarsest, BandStats, DataType, Product, ProductId, TileCache, TileKey, TILE,
 };
 use snap_io::{IoError, Registry};
 use std::collections::{HashMap, HashSet};
@@ -333,6 +333,8 @@ pub struct SnapApp {
     render_state: Option<eframe::egui_wgpu::RenderState>,
     /// Latest canvas hover (view index, level-0 pixel); one frame behind the panel.
     hover: Option<(usize, (f64, f64))>,
+    /// (product, tx, ty) of the last hovered level-0 tile whose loads were requested.
+    hover_tile: Option<(ProductId, u32, u32)>,
 }
 
 struct Viewer<'a> {
@@ -433,6 +435,7 @@ impl SnapApp {
             metadata_filter: String::new(),
             render_state,
             hover: None,
+            hover_tile: None,
         }
     }
 
@@ -544,6 +547,23 @@ impl SnapApp {
         actions
     }
 
+    /// Asks the cache (non-blocking) for the hovered tile of every band and mask, once
+    /// per tile change, so Pixel Info isn't stuck on tiles no view displays.
+    fn request_hover_tiles(&mut self) {
+        let Some((v, (x, y))) = self.hover else {
+            self.hover_tile = None;
+            return;
+        };
+        let Some(pid) = self.state.views.get(v).map(|v| v.product) else {
+            return;
+        };
+        let tile = (pid, x.max(0.0) as u32 / TILE, y.max(0.0) as u32 / TILE);
+        if self.hover_tile != Some(tile) {
+            self.hover_tile = Some(tile);
+            request_hover_tiles(&self.state, pid, x, y);
+        }
+    }
+
     /// Reports finished exports as toasts; keeps the frame loop alive while any run.
     fn poll_exports(&mut self, ctx: &egui::Context) {
         let (done, running): (Vec<_>, Vec<_>) = std::mem::take(&mut self.exports)
@@ -611,6 +631,7 @@ impl eframe::App for SnapApp {
             ctx.request_repaint();
         }
         self.hover = viewer.next_hover;
+        self.request_hover_tiles();
         if let Some((_, Pane::Image(i))) = self.dock.find_active_focused() {
             self.state.active_view = Some(*i);
         }
