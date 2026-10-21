@@ -38,6 +38,8 @@ GDAL_DATA = "%CONDA_PREFIX%\\Library\\share\\gdal"
 PROJ_DATA = "%CONDA_PREFIX%\\Library\\share\\proj"
 GDAL_LIB_DIR = "%CONDA_PREFIX%\\Library\\lib"
 GDAL_INCLUDE_DIR = "%CONDA_PREFIX%\\Library\\include"
+# bindgen (proj-sys) looks for libclang.dll here; conda puts it in Library\bin, not on its search path.
+LIBCLANG_PATH = "%CONDA_PREFIX%\\Library\\bin"
 PKG_CONFIG_PATH = "%PIXI_PROJECT_ROOT%\\ci\\pkgconfig-win;%CONDA_PREFIX%\\Library\\lib\\pkgconfig"
 
 [target.osx-64.activation.env]
